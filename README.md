@@ -6,7 +6,7 @@ It uses the same hooks mechanism as [claude-status-bar](https://github.com/m1ckc
 
 ![ccglance demo](docs/demo.gif)
 
-<a href="https://github.com/hatoya/ccglance/releases/latest/download/ccglance.zip"><img src="docs/download.png" alt="Download ccglance.zip for macOS" width="280"></a>
+<a href="https://github.com/hatoya/ccglance/releases/latest/download/ccglance.zip"><img src="docs/download.png" alt="Download ccglance.zip for macOS" width="360"></a>
 
 First install is just the button above: download, unzip, drag the app into Applications, launch once. See [Install](#install) for details.
 
