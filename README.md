@@ -1,98 +1,109 @@
 # ccglance
 
-Claude Code の稼働状況を、menu bar ではなく**常に最前面のフローティングパネル**で表示する macOS アプリ。サブモニターの隅に置いておけば、どのセッションが動作中・許可待ち・完了かを一目で確認できます。
+A macOS app that shows Claude Code activity in an **always-on-top floating panel** instead of the menu bar. Park it in a corner of a secondary display and see at a glance which sessions are working, awaiting permission (yellow pulse), or finished.
 
-[claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) と同じ hooks 方式で動作しますが、複数セッションを同時に一覧表示します。
+It uses the same hooks mechanism as [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), but shows multiple sessions at once.
 
-## 表示内容
+![ccglance demo](docs/demo.gif)
 
-各行に 1 セッション（プロジェクト）:
+<a href="https://github.com/hatoya/ccglance/releases/latest/download/ccglance.zip"><img src="docs/download.png" alt="Download ccglance.zip for macOS" width="280"></a>
 
-- **アニメーションスパーク**（オレンジ #d97757） — Thinking / ツール実行中
-- **プロジェクト名** — セッションの作業ディレクトリ名
-- **状態ラベル** — `Thinking…` / `Editing` / `Reading` / `Running command` / `Awaiting permission` / `Idle`
-- **経過時間** — 現在のターンの経過タイマー（`1m 23s`）
-- **許可待ち** — 黄色いドット + 行が黄色くパルスして強調
+First install is just the button above: download, unzip, drag the app into Applications, launch once. See [Install](#install) for details.
 
-## ウィンドウの挙動
+## Install
 
-- 常に最前面（フルスクリーンアプリの上にも表示）
-- 全 Spaces / 全モニターで表示 — サブモニターに置きっぱなしにできる
-- ドラッグでどこへでも移動可・位置は記憶される
-- 半透明 HUD デザイン、フォーカスを奪わない（クリックしても作業中のアプリからフォーカスが外れない）
-- Dock アイコンなし
-- 右クリックメニュー: 終了 / 完了セッションのクリア / hooks 再インストール / アップデート確認
+1. [Download the latest `ccglance.zip`](https://github.com/hatoya/ccglance/releases/latest/download/ccglance.zip) and unzip it.
+2. Drag **ccglance.app** into Applications.
+3. Launch it once — on first launch it wires up the Claude Code hooks automatically (appends to `~/.claude/settings.json`; existing hooks are left untouched, and a backup is saved as `settings.json.bak-ccglance`).
+4. Start a new Claude Code session — the panel appears and tracks it.
 
-## 必要環境
+> **If Claude Code is already open, restart it (or start a new session) once.** Hooks are loaded when a session starts.
 
-- macOS 12+
-- Xcode Command Line Tools（ビルド用）: `xcode-select --install`
-- Node.js（hooks スクリプト用）
-- Claude Code（CLI または Desktop アプリ）
+> The app is ad-hoc signed (not notarized), so the first launch may be blocked by Gatekeeper. Right-click the app → **Open** → **Open** to approve it once.
 
-## ビルドとインストール
+Requires macOS 12+, [Claude Code](https://claude.com/claude-code) (CLI or Desktop app), and Node.js (for the hooks script).
 
-```bash
-./build.sh
-cp -R build/ccglance.app /Applications/
-open /Applications/ccglance.app
-```
-
-初回起動時に Claude Code の hooks を自動設定します（`~/.claude/settings.json` に追記。既存の hooks には触れず、`settings.json.bak-ccglance` にバックアップを作成）。
-
-> **すでに Claude Code を開いている場合は再起動（または新しいセッションを開始）してください。** hooks はセッション開始時に読み込まれます。
-
-自動セットアップが動かない場合は手動で:
+If the automatic hook setup doesn't work, run it manually:
 
 ```bash
 node "/Applications/ccglance.app/Contents/Resources/install.js"
 ```
 
-## 仕組み
+### Build from source
 
-Claude Code のライフサイクル hooks（SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / Stop / SessionEnd）が、セッションごとの状態を `~/.claude/ccglance/sessions/<session_id>.json` に書き込みます。アプリはこのディレクトリを 0.25 秒間隔でポーリングして描画します。
+```bash
+git clone https://github.com/hatoya/ccglance
+cd ccglance
+./build.sh
+cp -R build/ccglance.app /Applications/
+open /Applications/ccglance.app
+```
 
-- セッション終了時に状態ファイルは削除されます
-- 12 時間更新のないファイル（クラッシュしたセッション）は自動削除されます
-- `SessionStart` 時にアプリを自動起動します（`open -g -a ccglance`）
+Requires the Xcode Command Line Tools (`xcode-select --install`).
 
-### 対応範囲
+## Window behavior
 
-| Surface | 対応 |
+- Always on top (even above full-screen apps)
+- Visible on all Spaces / all monitors — leave it parked on a secondary display
+- Drag to move it anywhere; the position is remembered
+- Translucent HUD design that never steals focus (clicking it won't take focus away from the app you're working in)
+- No Dock icon
+- Right-click menu: quit / clear finished sessions / reinstall hooks / check for updates
+
+## How it works
+
+Claude Code lifecycle hooks (SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / Stop / SessionEnd) write per-session state to `~/.claude/ccglance/sessions/<session_id>.json`. The app polls this directory every 0.25 seconds and renders the result.
+
+- State files are deleted when a session ends
+- Files not updated for 12 hours (crashed sessions) are cleaned up automatically
+- The app is launched automatically on `SessionStart` (`open -g -a ccglance`)
+
+### Supported surfaces
+
+| Surface | Supported |
 | --- | --- |
 | Claude Code CLI | ✅ |
-| Claude Code Desktop（Code タブ） | ✅ |
-| Claude Desktop（Chat）/ Cowork | ❌（hooks 非対応） |
+| Claude Code Desktop (Code tab) | ✅ |
+| Claude Desktop (Chat) / Cowork | ❌ (no hooks support) |
 
-許可待ち検出は CLI の permission notification に依存します。Desktop アプリでは in-app プロンプトが hook を発火しないため、ツール名表示のままになります。
+Permission detection relies on the CLI's permission notification. In the Desktop app, in-app prompts don't fire the hook, so the row keeps showing the tool name instead.
 
-## アップデート
+## Updates
 
-GitHub Releases の最新版を起動 5 秒後と 24 時間ごとにチェックします（前回チェックから 24 時間未満なら起動時チェックはスキップ）。新しいバージョンが見つかると:
+The app checks GitHub Releases for the latest version 5 seconds after launch and every 24 hours (the launch check is skipped if the last check was less than 24 hours ago). When a newer version is found:
 
-- パネル下部にオレンジのバナー「⬆ Update to vX.Y.Z」が表示されます
-- 右クリックメニューに「Update to ccglance vX.Y.Z…」が追加されます
+- An orange "⬆ Update to vX.Y.Z" banner appears at the bottom of the panel
+- An "Update to ccglance vX.Y.Z…" item is added to the right-click menu
 
-クリックすると **その場でアップデート** します: リリースの zip をダウンロード → 展開 → 実行中の `.app` を置き換え → 自動で再起動。ダウンロードや置き換えに失敗した場合はロールバックし、リリースページをブラウザで開きます（zip アセットが無いリリースも同様）。
+Clicking either one **updates in place**: it downloads the release zip → unpacks it → replaces the running `.app` → relaunches automatically. If the download or replacement fails, it rolls back and opens the release page in your browser (same for releases without a zip asset).
 
-手動チェックは右クリックメニューの「Check for updates…」から。
+To check manually, use "Check for updates…" in the right-click menu.
 
-リリース手順（メンテナ向け）:
+### Updating manually
 
-1. `build.sh` の `VERSION` を上げる（Info.plist に反映されます）
-2. `./build.sh` でビルド（`build/ccglance-v<VERSION>.zip` と `.zip.sha256` も生成されます）
-3. `v<VERSION>` タグで GitHub Release を作成し、zip と `.sha256` を**両方**添付（無いと自動更新できず、リリースページ誘導になります）
+If you prefer not to use the in-app updater (or it can't run, e.g. the release has no zip asset):
 
-チェック先リポジトリは `Sources/UpdateChecker.swift` の `UpdateChecker.repo` で変更できます。
+1. [Download the latest `ccglance.zip`](https://github.com/hatoya/ccglance/releases/latest/download/ccglance.zip) and unzip it.
+2. Drag **ccglance.app** into Applications — when Finder says an item with that name already exists, choose **Replace**. No need to uninstall first.
+3. Launch it once. Hooks are refreshed automatically on every launch, so there is no manual migration step.
 
-## アンインストール
+Release procedure (for maintainers):
+
+1. Bump `VERSION` in `build.sh` (propagated to Info.plist)
+2. Build with `./build.sh` (also produces `build/ccglance.zip` and `.zip.sha256` — the zip name is unversioned so the `releases/latest/download/ccglance.zip` link always works)
+3. Add the version's entry to `CHANGELOG.md` — list only what changed since the previous release
+4. Create a GitHub Release tagged `v<VERSION>`, paste the changelog entry as the release notes, and attach **both** the zip and the `.sha256` (without them, auto-update falls back to opening the release page)
+
+The repository to check can be changed via `UpdateChecker.repo` in `Sources/UpdateChecker.swift`.
+
+## Uninstall
 
 ```bash
 node "/Applications/ccglance.app/Contents/Resources/uninstall.js"
 ```
 
-その後アプリをゴミ箱へ。ccglance の hooks のみが削除され、他の hooks はそのまま残ります。
+Then move the app to the Trash. Only ccglance's hooks are removed; any other hooks are left intact.
 
-## ライセンス
+## License
 
 MIT
