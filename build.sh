@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="ccglance"
-VERSION="1.1.0"   # single source of truth — release tags are v$VERSION
+VERSION="1.1.1"   # single source of truth — release tags are v$VERSION
 BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 
