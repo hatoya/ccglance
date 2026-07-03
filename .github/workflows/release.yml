@@ -1,11 +1,17 @@
 # Builds ccglance.app on a macOS runner when a release is published and
 # attaches ccglance.zip + ccglance.zip.sha256 to that release.
 # Both assets are required by the in-app auto-updater (UpdateChecker).
+# Can also be run manually (workflow_dispatch) against an existing tag.
 name: Release assets
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and upload assets for (e.g. v1.1.1)"
+        required: true
 
 permissions:
   contents: write
@@ -13,27 +19,28 @@ permissions:
 jobs:
   build-and-upload:
     runs-on: macos-14
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       # The tag is the source of truth: sync build.sh's VERSION to it so the
       # app's Info.plist always matches the release even if the bump was missed.
       - name: Sync VERSION with tag
-        env:
-          TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION="${TAG#v}"
           sed -i '' "s/^VERSION=\"[^\"]*\"/VERSION=\"$VERSION\"/" build.sh
           grep '^VERSION=' build.sh
 
+      # bash (not ./build.sh): the exec bit can be lost when files are
+      # committed via the GitHub API / web UI.
       - name: Build
-        run: ./build.sh
+        run: bash build.sh
 
       - name: Upload zip and checksum to the release
         env:
-          TAG: ${{ github.event.release.tag_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$TAG" \
