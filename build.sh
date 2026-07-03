@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="ccglance"
-VERSION="1.0.0"   # single source of truth — release tags are v$VERSION
+VERSION="1.1.0"   # single source of truth — release tags are v$VERSION
 BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 
@@ -43,9 +43,10 @@ codesign --force --deep --sign - "$APP"
 
 # Release assets: the app checks the zip's SHA-256 against the .sha256 asset
 # before auto-installing an update, so BOTH files must be uploaded to the
-# GitHub release together.
+# GitHub release together. The zip name is intentionally unversioned so the
+# stable link releases/latest/download/ccglance.zip always works.
 echo "Packaging release zip…"
-ZIP_NAME="$APP_NAME-v$VERSION.zip"
+ZIP_NAME="$APP_NAME.zip"
 rm -f "$BUILD_DIR/$ZIP_NAME" "$BUILD_DIR/$ZIP_NAME.sha256"
 ditto -c -k --keepParent "$APP" "$BUILD_DIR/$ZIP_NAME"
 (cd "$BUILD_DIR" && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256")
