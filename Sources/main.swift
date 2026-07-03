@@ -535,18 +535,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             updateBanner.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
         ])
 
-        // Context menu (right click)
+        // Context menu (right click) — version block first
         let menu = NSMenu()
-        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshTitles), keyEquivalent: "r")
-        menu.addItem(withTitle: "Clear finished sessions", action: #selector(clearIdle), keyEquivalent: "")
-        menu.addItem(withTitle: "Reinstall Claude Code hooks", action: #selector(reinstallHooks), keyEquivalent: "")
-        menu.addItem(.separator())
         let versionItem = menu.addItem(
             withTitle: "ccglance v\(UpdateChecker.currentVersion)", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         updateMenuItem = menu.addItem(withTitle: "", action: #selector(installUpdate), keyEquivalent: "")
         updateMenuItem.isHidden = true
         menu.addItem(withTitle: "Check for updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshTitles), keyEquivalent: "r")
+        menu.addItem(withTitle: "Clear finished sessions", action: #selector(clearIdle), keyEquivalent: "")
+        menu.addItem(withTitle: "Reinstall Claude Code hooks", action: #selector(reinstallHooks), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
