@@ -89,12 +89,11 @@ If you prefer not to use the in-app updater (or it can't run, e.g. the release h
 
 Release procedure (for maintainers):
 
-1. Bump `VERSION` in `build.sh` (propagated to Info.plist)
-2. Build with `./build.sh` (also produces `build/ccglance.zip` and `.zip.sha256` — the zip name is unversioned so the `releases/latest/download/ccglance.zip` link always works)
-3. Add the version's entry to `CHANGELOG.md` — list only what changed since the previous release
-4. Create a GitHub Release tagged `v<VERSION>`, paste the changelog entry as the release notes, and attach **both** the zip and the `.sha256` (without them, auto-update falls back to opening the release page)
+1. Bump `VERSION` in `build.sh` and add the version's entry to `CHANGELOG.md` — list only what changed since the previous release
+2. Create a GitHub Release tagged `v<VERSION>` and paste the changelog entry as the release notes
+3. On publish, the [release workflow](.github/workflows/release.yml) builds the app on a macOS runner and attaches `ccglance.zip` and `ccglance.zip.sha256` automatically (both are required by the in-app updater; the workflow syncs the build version to the tag, so a missed bump still produces a correct zip)
 
-The repository to check can be changed via `UpdateChecker.repo` in `Sources/UpdateChecker.swift`.
+`./build.sh` still works locally for development, and `gh release upload <tag> build/ccglance.zip build/ccglance.zip.sha256 --clobber` is the manual fallback if the workflow is unavailable. The zip name is unversioned so the `releases/latest/download/ccglance.zip` link always works. The repository to check can be changed via `UpdateChecker.repo` in `Sources/UpdateChecker.swift`.
 
 ## Uninstall
 
@@ -103,6 +102,10 @@ node "/Applications/ccglance.app/Contents/Resources/uninstall.js"
 ```
 
 Then move the app to the Trash. Only ccglance's hooks are removed; any other hooks are left intact.
+
+## Built with Claude / not affiliated
+
+ccglance is an unofficial, open-source side project inspired by [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar). It was built almost entirely with [Claude](https://claude.com) — from the Swift app and the hook scripts to this README and the demo GIF. It is not affiliated with, endorsed by, or sponsored by Anthropic. "Claude" is a trademark of Anthropic.
 
 ## License
 

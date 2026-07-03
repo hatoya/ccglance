@@ -1,0 +1,42 @@
+# Builds ccglance.app on a macOS runner when a release is published and
+# attaches ccglance.zip + ccglance.zip.sha256 to that release.
+# Both assets are required by the in-app auto-updater (UpdateChecker).
+name: Release assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      # The tag is the source of truth: sync build.sh's VERSION to it so the
+      # app's Info.plist always matches the release even if the bump was missed.
+      - name: Sync VERSION with tag
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          sed -i '' "s/^VERSION=\"[^\"]*\"/VERSION=\"$VERSION\"/" build.sh
+          grep '^VERSION=' build.sh
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Upload zip and checksum to the release
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" \
+            build/ccglance.zip \
+            build/ccglance.zip.sha256 \
+            --clobber
