@@ -1,0 +1,32 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+categories:
+  - title: '🚀 Features'
+    label: 'feature'
+  - title: '🐛 Bug Fixes'
+    label: 'bug'
+  - title: '🧰 Maintenance'
+    label: 'chore'
+change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+change-title-escapes: '\<*_&'
+version-resolver:
+  minor:
+    labels:
+      - 'feature'
+  patch:
+    labels:
+      - 'bug'
+      - 'chore'
+  default: patch
+autolabeler:
+  - label: feature
+    branch:
+      - '/^feature[/-].+/'
+  - label: bug
+    branch:
+      - '/^(bug|bugfix|hotfix|fix)[/-].+/'
+  - label: chore
+    branch:
+      - '/^chore[/-].+/'
+template: |
+  $CHANGES
