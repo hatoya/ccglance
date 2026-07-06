@@ -353,6 +353,7 @@ final class AgentRowView: NSView {
         // Same font sizes as SessionRowView; dimmer colors keep the hierarchy
         treeGlyph.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         treeGlyph.textColor = .tertiaryLabelColor
+        treeGlyph.alignment = .center
         spark.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         spark.textColor = Theme.orange
         spark.alignment = .center
@@ -380,7 +381,9 @@ final class AgentRowView: NSView {
         }
 
         NSLayoutConstraint.activate([
-            treeGlyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            // Same column as the session row's glyph
+            treeGlyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            treeGlyph.widthAnchor.constraint(equalToConstant: 16),
             treeGlyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             spark.leadingAnchor.constraint(equalTo: treeGlyph.trailingAnchor, constant: 4),
@@ -718,14 +721,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard rowIndex < rows.count else { break }
                 rows[rowIndex].update(session, sparkIndex: sparkIndex, now: now)
                 let agents = session.agents ?? []
-                // border only between rows within a group; when the session has
-                // agent rows, the border moves below the last of them
-                let needsSeparator = j < group.sessions.count - 1
-                rows[rowIndex].showsSeparator = needsSeparator && agents.isEmpty
+                // border after every visual row except the group's last one
+                let isLastInGroup = j == group.sessions.count - 1
+                rows[rowIndex].showsSeparator = !agents.isEmpty || !isLastInGroup
                 for (k, agent) in agents.enumerated() {
                     guard agentRowIndex < agentRows.count else { break }
                     agentRows[agentRowIndex].update(agent, sparkIndex: sparkIndex, now: now)
-                    agentRows[agentRowIndex].showsSeparator = needsSeparator && k == agents.count - 1
+                    agentRows[agentRowIndex].showsSeparator = !(isLastInGroup && k == agents.count - 1)
                     agentRowIndex += 1
                 }
                 rowIndex += 1
