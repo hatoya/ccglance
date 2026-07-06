@@ -172,13 +172,6 @@ final class ClawdView: NSView {
             in: NSRect(x: x, y: yOffset, width: size.width, height: size.height),
             from: .zero, operation: .sourceOver, fraction: alpha
         )
-
-        // Yellow attention dot while awaiting permission
-        if state == .permission {
-            Theme.yellow.setFill()
-            let d: CGFloat = 7
-            NSBezierPath(ovalIn: NSRect(x: x + size.width + 2, y: size.height - d, width: d, height: d)).fill()
-        }
     }
 }
 
