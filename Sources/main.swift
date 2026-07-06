@@ -335,9 +335,9 @@ final class SessionRowView: NSView {
 // MARK: - Agent row view (running subagent, indented under its session row)
 
 final class AgentRowView: NSView {
-    static let height: CGFloat = 22
+    static let height: CGFloat = 24
 
-    let treeGlyph = NSTextField(labelWithString: "⎿")
+    let treeGlyph = NSTextField(labelWithString: "└")
     let spark = NSTextField(labelWithString: "")
     let descLabel = NSTextField(labelWithString: "")
     let timeLabel = NSTextField(labelWithString: "")
@@ -350,15 +350,16 @@ final class AgentRowView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
 
-        treeGlyph.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        // Same font sizes as SessionRowView; dimmer colors keep the hierarchy
+        treeGlyph.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         treeGlyph.textColor = .tertiaryLabelColor
-        spark.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        spark.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         spark.textColor = Theme.orange
         spark.alignment = .center
-        descLabel.font = NSFont.systemFont(ofSize: 11)
+        descLabel.font = NSFont.systemFont(ofSize: 12)
         descLabel.textColor = .secondaryLabelColor
         descLabel.lineBreakMode = .byTruncatingTail
-        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         timeLabel.textColor = .secondaryLabelColor
         timeLabel.alignment = .right
 
@@ -383,7 +384,7 @@ final class AgentRowView: NSView {
             treeGlyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             spark.leadingAnchor.constraint(equalTo: treeGlyph.trailingAnchor, constant: 4),
-            spark.widthAnchor.constraint(equalToConstant: 12),
+            spark.widthAnchor.constraint(equalToConstant: 16),
             spark.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             descLabel.leadingAnchor.constraint(equalTo: spark.trailingAnchor, constant: 5),
