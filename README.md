@@ -52,7 +52,7 @@ Requires the Xcode Command Line Tools (`xcode-select --install`).
 
 ## How it works
 
-Claude Code lifecycle hooks (SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / Stop / SessionEnd) write per-session state to `~/.claude/ccglance/sessions/<session_id>.json`. The app polls this directory every 0.25 seconds and renders the result.
+Claude Code lifecycle hooks (SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / Stop / SessionEnd) write per-session state to `~/.claude/ccglance/sessions/<session_id>.json`. The app polls this directory every 0.5 seconds and renders the result.
 
 - State files are deleted when a session ends
 - Files not updated for 12 hours (crashed sessions) are cleaned up automatically
