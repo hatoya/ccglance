@@ -1,6 +1,15 @@
 import AppKit
+import CoreText
 
 // MARK: - Session state model (written by hooks/ccglance-hook.js)
+
+struct PRInfo: Codable {
+    var number: Int?
+    var state: String?    // "OPEN" | "MERGED" | "CLOSED"
+    var isDraft: Bool?
+    var url: String?
+    var checkedAt: Double?
+}
 
 struct SessionState: Codable {
     var sessionId: String
@@ -12,6 +21,7 @@ struct SessionState: Codable {
     var message: String?
     var turnStartedAt: Double?
     var updatedAt: Double
+    var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
 }
 
 enum StateStore {
@@ -116,6 +126,29 @@ enum Theme {
     static let yellow = NSColor(red: 0xE8 / 255.0, green: 0xC4 / 255.0, blue: 0x4A / 255.0, alpha: 1)
     static let idle = NSColor.tertiaryLabelColor
     static let sparkFrames = ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"]
+
+    // PR state colors matching GitHub's dark palette (the panel appearance
+    // is pinned to darkAqua in buildPanel, so no light variants are needed)
+    static let prOpen = hex(0x3FB950)
+    static let prMerged = hex(0xA371F7)
+    static let prClosed = hex(0xF85149)
+    static let prDraft = NSColor.tertiaryLabelColor
+
+    // Font Awesome 6 Free Solid glyphs (font bundled in Resources)
+    static let faPullRequest = "\u{E13C}"   // code-pull-request
+    static let faMerge = "\u{F387}"         // code-merge
+    static func faFont(size: CGFloat) -> NSFont? {
+        NSFont(name: "FontAwesome6Free-Solid", size: size)
+    }
+
+    private static func hex(_ rgb: Int) -> NSColor {
+        NSColor(
+            red: CGFloat((rgb >> 16) & 0xFF) / 255.0,
+            green: CGFloat((rgb >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(rgb & 0xFF) / 255.0,
+            alpha: 1
+        )
+    }
 }
 
 enum CrabState {
@@ -297,6 +330,7 @@ final class SessionRowView: NSView {
 
         switch s.status {
         case "thinking", "tool":
+            setGlyph(font: Self.systemGlyphFont, tooltip: nil)
             glyph.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
             glyph.textColor = Theme.orange
             // Elapsed time when available; fall back to status name when it isn't
@@ -309,6 +343,7 @@ final class SessionRowView: NSView {
             rightLabel.textColor = .labelColor
             highlight.layer?.backgroundColor = nil
         case "permission":
+            setGlyph(font: Self.systemGlyphFont, tooltip: nil)
             glyph.stringValue = "●"
             glyph.textColor = Theme.yellow
             rightLabel.stringValue = "Waiting"
@@ -316,12 +351,54 @@ final class SessionRowView: NSView {
             let pulse = 0.10 + 0.10 * (0.5 + 0.5 * sin(now * 4))
             highlight.layer?.backgroundColor = Theme.yellow.withAlphaComponent(pulse).cgColor
         default: // idle
-            glyph.stringValue = "●"
-            glyph.textColor = Theme.idle
+            if let pr = prGlyph(for: s), let faFont = Self.faGlyphFont {
+                setGlyph(font: faFont, tooltip: pr.tooltip)
+                glyph.stringValue = pr.icon
+                glyph.textColor = pr.color
+            } else {
+                setGlyph(font: Self.systemGlyphFont, tooltip: nil)
+                glyph.stringValue = "●"
+                glyph.textColor = Theme.idle
+            }
             rightLabel.stringValue = "Idle"
             rightLabel.textColor = .tertiaryLabelColor
             highlight.layer?.backgroundColor = nil
         }
+    }
+
+    // The glyph font switches between the system font (dot/spark) and Font
+    // Awesome (PR icon while idle). Fonts are resolved once — the FA lookup
+    // runs after registration at launch — and reassigned only on change:
+    // this runs on the 0.1s tick, and font/toolTip setters don't short-circuit.
+    private static let systemGlyphFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    private static let faGlyphFont = Theme.faFont(size: 11)
+
+    private func setGlyph(font: NSFont, tooltip: String?) {
+        if glyph.font != font { glyph.font = font }
+        if glyph.toolTip != tooltip { glyph.toolTip = tooltip }
+    }
+
+    /// Icon, color and tooltip for the session's PR state; nil falls back to
+    /// the plain idle dot (no PR / unknown state).
+    private func prGlyph(for s: SessionState) -> (icon: String, color: NSColor, tooltip: String)? {
+        guard let pr = s.pr, let state = pr.state else { return nil }
+        let icon: String
+        let color: NSColor
+        let label: String
+        switch state {
+        case "OPEN" where pr.isDraft == true:
+            (icon, color, label) = (Theme.faPullRequest, Theme.prDraft, "draft")
+        case "OPEN":
+            (icon, color, label) = (Theme.faPullRequest, Theme.prOpen, "open")
+        case "MERGED":
+            (icon, color, label) = (Theme.faMerge, Theme.prMerged, "merged")
+        case "CLOSED":
+            (icon, color, label) = (Theme.faPullRequest, Theme.prClosed, "closed")
+        default:
+            return nil
+        }
+        let number = pr.number.map { "PR #\($0)" } ?? "PR"
+        return (icon, color, "\(number) · \(label)")
     }
 }
 
@@ -405,6 +482,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // Font Awesome glyphs are used for the idle-row PR status icon
+        if let fontURL = Bundle.main.url(forResource: "Font Awesome 6 Free-Solid-900", withExtension: "otf") {
+            CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
+        }
         try? FileManager.default.createDirectory(
             at: StateStore.sessionsDir, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
@@ -683,28 +764,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: Hooks installer
 
+    private lazy var nodePath: String? = Self.findNode()
+
+    private static func findNode() -> String? {
+        let candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+        if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            return found
+        }
+        // Fall back to login-shell lookup
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-lc", "command -v node"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        try? p.run()
+        p.waitUntilExit()
+        if let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !out.isEmpty {
+            return out
+        }
+        return nil
+    }
+
     @discardableResult
     private func runInstaller() -> Bool {
         guard let resources = Bundle.main.resourcePath else { return false }
         let installer = resources + "/install.js"
         guard FileManager.default.fileExists(atPath: installer) else { return false }
-        let candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
-        var node = candidates.first { FileManager.default.fileExists(atPath: $0) }
-        if node == nil {
-            // Fall back to login-shell lookup
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            p.arguments = ["-lc", "command -v node"]
-            let pipe = Pipe()
-            p.standardOutput = pipe
-            try? p.run()
-            p.waitUntilExit()
-            if let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines), !out.isEmpty {
-                node = out
-            }
-        }
-        guard let nodePath = node else {
+        guard let nodePath = nodePath else {
             NSLog("ccglance: node not found; run install.js manually")
             return false
         }
@@ -716,11 +803,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return proc.terminationStatus == 0
     }
 
+    /// Re-fetch PR status for idle sessions via the bundled hook's --fetch-pr
+    /// mode. Fire-and-forget: results land in the session files and get picked
+    /// up by the regular 0.5s poll. Hook events refresh PR state on their own
+    /// (Stop/SessionStart), so this only serves the manual Refresh action.
+    private func refreshPRStatuses() {
+        guard let resources = Bundle.main.resourcePath, let nodePath = nodePath else { return }
+        let hook = resources + "/ccglance-hook.js"
+        guard FileManager.default.fileExists(atPath: hook) else { return }
+        for s in sessions where s.status == "idle" {
+            guard let cwd = s.cwd else { continue }
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: nodePath)
+            proc.arguments = [hook, "--fetch-pr", s.sessionId, cwd]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+        }
+    }
+
     // MARK: Menu actions
 
     @objc private func refreshTitles() {
         StateStore.refreshTitles()
         sessions = StateStore.load()
+        refreshPRStatuses()
         tick()
     }
 

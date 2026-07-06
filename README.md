@@ -58,6 +58,10 @@ Claude Code lifecycle hooks (SessionStart / UserPromptSubmit / PreToolUse / Post
 - Files not updated for 12 hours (crashed sessions) are cleaned up automatically
 - The app is launched automatically on `SessionStart` (`open -g -a ccglance`)
 
+### PR status on idle sessions
+
+When a session goes idle, its row icon shows the pull-request state of the session's branch — open (green), draft (gray), merged (purple), or closed (red) — with a `PR #n` tooltip. The hook fetches this via the [gh CLI](https://cli.github.com) (`gh pr view`) in a detached child process on `Stop`/`SessionStart`, so nothing blocks Claude Code and the app itself never touches the network. If `gh` isn't installed or the branch has no PR, the plain idle dot is shown instead. While a session stays idle no hooks fire, so the state can go stale; use **Refresh session names** in the right-click menu to re-fetch it.
+
 ### Supported surfaces
 
 | Surface | Supported |

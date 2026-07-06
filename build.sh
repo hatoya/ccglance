@@ -17,6 +17,8 @@ swiftc -O Sources/*.swift -o "$APP/Contents/MacOS/$APP_NAME"
 echo "Copying resources…"
 cp hooks/ccglance-hook.js hooks/install.js hooks/uninstall.js "$APP/Contents/Resources/"
 cp icon/AppIcon.icns "$APP/Contents/Resources/"
+cp "fonts/Font Awesome 6 Free-Solid-900.otf" "$APP/Contents/Resources/"
+cp fonts/LICENSE.txt "$APP/Contents/Resources/Font-Awesome-LICENSE.txt"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
