@@ -24,6 +24,12 @@ const TOOL_LABELS = {
   Task: "Running agent",
 };
 
+// Tools that pause and wait for the user to respond
+const INPUT_TOOLS = {
+  AskUserQuestion: "Waiting for answer",
+  ExitPlanMode: "Awaiting plan approval",
+};
+
 function readStdin() {
   return new Promise((resolve) => {
     let data = "";
@@ -226,8 +232,18 @@ async function main() {
       break;
 
     case "PreToolUse":
-      base.status = "tool";
-      base.tool = TOOL_LABELS[input.tool_name] || "Using tool";
+      // Tools that block on user input never trigger a Notification event
+      // (AskUserQuestion shows its own picker; ExitPlanMode waits for plan
+      // approval) — surface them as awaiting-input immediately.
+      if (INPUT_TOOLS[input.tool_name]) {
+        base.status = "permission";
+        base.tool = null;
+        base.message = INPUT_TOOLS[input.tool_name];
+      } else {
+        base.status = "tool";
+        base.tool = TOOL_LABELS[input.tool_name] || "Using tool";
+        base.message = null;
+      }
       if (base.turnStartedAt == null) base.turnStartedAt = now;
       saveState(base);
       break;
@@ -235,6 +251,7 @@ async function main() {
     case "PostToolUse":
       base.status = "thinking";
       base.tool = null;
+      base.message = null;
       saveState(base);
       break;
 
