@@ -739,6 +739,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if tickCount % 3 == 0 { sparkIndex += 1 }
 
+        // Refresh PR status every 60s so merges/closes done outside a session
+        // show up without waiting for the next turn boundary
+        if tickCount % 600 == 0 { refreshPRStatuses() }
+
         // Group sessions by project (directory name)
         let grouped = Dictionary(grouping: sessions) { $0.project ?? "\u{2014}" }
             .map { (name: $0.key, sessions: $0.value) }
@@ -921,14 +925,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Re-fetch PR status for idle sessions via the bundled hook's --fetch-pr
     /// mode. Fire-and-forget: results land in the session files and get picked
-    /// up by the regular 0.5s poll. Hook events refresh PR state on their own
-    /// (Stop/SessionStart), so this only serves the manual Refresh action.
-    private func refreshPRStatuses() {
+    /// up by the regular 0.5s poll. Called every 60s from tick() and by the
+    /// manual Refresh action (force); hook events also refresh on
+    /// Stop/SessionStart. The periodic pass only polls sessions with a live
+    /// PR — no-PR sessions are covered by the hooks, MERGED is irreversible —
+    /// to keep the node/gh process churn minimal.
+    private func refreshPRStatuses(force: Bool = false) {
         guard let resources = Bundle.main.resourcePath, let nodePath = nodePath else { return }
         let hook = resources + "/ccglance-hook.js"
         guard FileManager.default.fileExists(atPath: hook) else { return }
+        let now = Date().timeIntervalSince1970
         for s in sessions where s.status == "idle" {
             guard let cwd = s.cwd else { continue }
+            if !force {
+                guard let pr = s.pr, pr.state != "MERGED" else { continue }
+                if let checked = pr.checkedAt, now - checked < 55 { continue }
+            }
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: nodePath)
             proc.arguments = [hook, "--fetch-pr", s.sessionId, cwd]
@@ -943,7 +955,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func refreshTitles() {
         StateStore.refreshTitles()
         sessions = StateStore.load()
-        refreshPRStatuses()
+        refreshPRStatuses(force: true)
         tick()
     }
 
