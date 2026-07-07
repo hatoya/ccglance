@@ -86,10 +86,11 @@ gh secret set APPLE_API_ISSUER_ID --body "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
    # → "The validate action worked!" ならOK
    ```
 
-4. 確認できたら`README.md`のGatekeeper注記（右クリック→「開く」の案内）を「vX.X.X以降はnotarize済みでそのまま起動できる」旨に更新する
+4. `README.md`はnotarize前提の記載に更新済み（Gatekeeperの右クリック回避注記は削除済み）。今後ad-hocに戻す場合のみ注記を復活させる
 
 ## トラブルシュート
 
+- **`security import`が`MAC verification failed during PKCS12 import (wrong password?)`で失敗する**: パスワードは正しいのに出る場合、`openssl pkcs12 -export`（OpenSSL 3.x）が.p12をSHA256 MAC + AES-256（PBES2）形式で作っており、macOSの`security`が非対応なのが原因。`openssl pkcs12 -export -legacy ...`で作り直す（MAC sha1 + 3DES/RC2になりmacOS互換）。`openssl pkcs12 -in x.p12 -info -passin pass:... -noout | grep -iE 'MAC:|PBE'`で`MAC: sha256`なら要`-legacy`。作り直したら`MACOS_CERTIFICATE_P12`だけ更新すればよい（同じパスワードを再利用すれば`MACOS_CERTIFICATE_PASSWORD`は据え置き可）。※キーチェーンアクセスのGUIから書き出した.p12はこの問題は起きない
 - **codesignが「unable to build chain」で失敗する**: Apple中間証明書が不足している。[Apple PKI](https://www.apple.com/certificateauthority/)から「Developer ID - G2」CA証明書をダウンロードし、`Import signing certificate`ステップ内で一時keychainに`security import`する1行を追加する
 - **notarizationが`Invalid`になる**: CIログに`notarytool log`の出力（JSON）が出るので、`issues`配列の内容を確認する
 - **初回のnotarizeが異常に長い**: 新規Developerアカウントの初回申請はAppleの審査で数時間保留されることがある。ジョブの`--timeout 30m`を超えて失敗した場合は時間を置いて`workflow_dispatch`で再実行する

@@ -19,8 +19,6 @@ First install is just the button above: download, unzip, drag the app into Appli
 
 > **If Claude Code is already open, restart it (or start a new session) once.** Hooks are loaded when a session starts.
 
-> The app is ad-hoc signed (not notarized), so the first launch may be blocked by Gatekeeper. Right-click the app → **Open** → **Open** to approve it once.
-
 Requires macOS 12+, [Claude Code](https://claude.com/claude-code) (CLI or Desktop app), and Node.js (for the hooks script).
 
 If the automatic hook setup doesn't work, run it manually:
