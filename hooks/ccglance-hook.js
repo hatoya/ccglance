@@ -6,7 +6,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 
 const SESSIONS_DIR = path.join(os.homedir(), ".claude", "ccglance", "sessions");
 
@@ -61,7 +61,9 @@ function loadState(sessionId) {
 function saveState(state) {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
   const file = stateFile(state.sessionId);
-  const tmp = `${file}.tmp`;
+  // pid in the tmp name: a detached --fetch-pr child and a hook event can
+  // write the same session concurrently; a shared tmp path would corrupt it
+  const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state));
   fs.renameSync(tmp, file);
 }
@@ -204,7 +206,89 @@ function launchApp() {
   execFile("open", ["-g", "-a", "ccglance"], () => {});
 }
 
+// PR status for the session's branch, fetched via the gh CLI. Runs in a
+// detached child (--fetch-pr mode) so the hook itself never blocks Claude
+// Code waiting on the network.
+const GH_CANDIDATES = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
+
+// done(pr): pr object → set it, null → clear the field (definitively no PR),
+// undefined → keep the last known state (transient failure: network, timeout)
+function runGhPrView(cwd, candidates, done) {
+  if (candidates.length === 0) return done(undefined);
+  execFile(
+    candidates[0],
+    ["pr", "view", "--json", "number,state,isDraft,url"],
+    { cwd, timeout: 15000 },
+    (err, stdout, stderr) => {
+      // Hooks may run with a limited PATH; try well-known install locations
+      if (err && err.code === "ENOENT") return runGhPrView(cwd, candidates.slice(1), done);
+      if (err) {
+        const definitive = /no pull requests found|not a git repository|no git remotes/i.test(
+          String(stderr)
+        );
+        return done(definitive ? null : undefined);
+      }
+      try {
+        const j = JSON.parse(stdout);
+        if (typeof j.state !== "string") return done(undefined);
+        done({
+          number: j.number,
+          state: j.state, // "OPEN" | "MERGED" | "CLOSED"
+          isDraft: !!j.isDraft,
+          url: j.url,
+          checkedAt: Date.now() / 1000,
+        });
+      } catch {
+        done(undefined);
+      }
+    }
+  );
+}
+
+function fetchPr(sessionId, cwd) {
+  runGhPrView(cwd, GH_CANDIDATES, (pr) => {
+    if (pr === undefined) return process.exit(0);
+    // Merge only the pr field into the freshest state; the session may have
+    // moved on (or ended) while gh was running.
+    const state = loadState(sessionId);
+    if (!state) return process.exit(0);
+    if (pr) state.pr = pr;
+    else delete state.pr;
+    // Re-check right before writing: SessionEnd may have deleted the file
+    // while gh was running, and this write must not resurrect the session
+    if (!fs.existsSync(stateFile(sessionId))) return process.exit(0);
+    // Leave updatedAt untouched so this write never extends the 12h pruning
+    saveState(state);
+    process.exit(0);
+  });
+}
+
+function spawnPrFetch(sessionId, cwd) {
+  if (typeof cwd !== "string" || cwd.length === 0) return;
+  try {
+    spawn(process.execPath, [__filename, "--fetch-pr", sessionId, cwd], {
+      detached: true,
+      stdio: "ignore",
+    }).unref();
+  } catch {}
+}
+
 async function main() {
+  if (process.argv[2] === "--fetch-pr") {
+    const sessionId = process.argv[3];
+    const cwd = process.argv[4];
+    if (
+      typeof sessionId !== "string" ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ||
+      typeof cwd !== "string" ||
+      !fs.existsSync(cwd)
+    ) {
+      process.exit(0);
+    }
+    fetchPr(sessionId, cwd);
+    return;
+  }
+
   const raw = await readStdin();
   let input;
   try {
@@ -258,6 +342,7 @@ async function main() {
       base.agents = [];
       saveState(base);
       launchApp();
+      spawnPrFetch(sessionId, base.cwd);
       break;
 
     case "UserPromptSubmit":
@@ -314,6 +399,7 @@ async function main() {
       base.turnStartedAt = null;
       base.agents = [];
       saveState(base);
+      spawnPrFetch(sessionId, base.cwd);
       break;
 
     case "SessionEnd":
