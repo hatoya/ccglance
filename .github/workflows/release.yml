@@ -19,6 +19,9 @@ permissions:
 jobs:
   build-and-upload:
     runs-on: macos-14
+    # Generous: a brand-new Apple Developer account's first notarization can
+    # be held for extended review.
+    timeout-minutes: 60
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
@@ -34,9 +37,53 @@ jobs:
           sed -i '' "s/^VERSION=\"[^\"]*\"/VERSION=\"$VERSION\"/" build.sh
           grep '^VERSION=' build.sh
 
+      # Signing/notarization is opt-in: when the secrets below are unset the
+      # steps are skipped and the build falls back to ad-hoc signing exactly
+      # as before. Setup guide: docs/NOTARIZATION.md
+      - name: Import signing certificate
+        if: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/ccglance-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Don't auto-lock while notarytool --wait is running
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          # Without this codesign hangs on a GUI keychain prompt in CI
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # A new keychain is not searchable until added to the search list
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep -o '"Developer ID Application: [^"]*"' | head -n 1 | tr -d '"')
+          if [ -z "$IDENTITY" ]; then
+            echo "No Developer ID Application identity found in MACOS_CERTIFICATE_P12" >&2
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      # notarytool needs the .p8 as a file; only the path goes into GITHUB_ENV.
+      - name: Prepare notarization API key
+        if: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          echo "NOTARY_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
       # bash (not ./build.sh): the exec bit can be lost when files are
       # committed via the GitHub API / web UI.
       - name: Build
+        env:
+          NOTARY_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: bash build.sh
 
       - name: Upload zip and checksum to the release
@@ -47,3 +94,11 @@ jobs:
             build/ccglance.zip \
             build/ccglance.zip.sha256 \
             --clobber
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"

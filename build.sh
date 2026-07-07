@@ -8,6 +8,11 @@ VERSION="1.1.1"   # single source of truth — release tags are v$VERSION
 BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 
+# Signing is ad-hoc by default. CI sets CODESIGN_IDENTITY to a
+# "Developer ID Application: …" identity for notarized releases
+# (see docs/NOTARIZATION.md).
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -40,8 +45,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "Signing (ad-hoc)…"
-codesign --force --deep --sign - "$APP"
+if [ "$CODESIGN_IDENTITY" = "-" ]; then
+    echo "Signing (ad-hoc)…"
+    codesign --force --sign - "$APP"
+else
+    # Hardened runtime + secure timestamp are required for notarization.
+    echo "Signing ($CODESIGN_IDENTITY)…"
+    codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
+fi
 
 # Release assets: the app checks the zip's SHA-256 against the .sha256 asset
 # before auto-installing an update, so BOTH files must be uploaded to the
@@ -52,6 +63,53 @@ ZIP_NAME="$APP_NAME.zip"
 rm -f "$BUILD_DIR/$ZIP_NAME" "$BUILD_DIR/$ZIP_NAME.sha256"
 ditto -c -k --keepParent "$APP" "$BUILD_DIR/$ZIP_NAME"
 (cd "$BUILD_DIR" && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256")
+
+# Notarize when App Store Connect API key env vars are present (CI only —
+# see docs/NOTARIZATION.md). Unset secrets reach CI as empty strings, so
+# test for non-empty rather than set-ness. Ad-hoc signed builds are always
+# rejected by Apple, so notarize only with a real identity.
+if [ "$CODESIGN_IDENTITY" != "-" ] && [ -n "${NOTARY_API_KEY_PATH:-}" ] && [ -n "${NOTARY_API_KEY_ID:-}" ] && [ -n "${NOTARY_API_ISSUER_ID:-}" ]; then
+    echo "Notarizing…"
+    # notarytool has been known to exit 0 on an Invalid verdict, so parse
+    # the JSON status instead of trusting the exit code.
+    SUBMIT_JSON=$(xcrun notarytool submit "$BUILD_DIR/$ZIP_NAME" \
+        --key "$NOTARY_API_KEY_PATH" \
+        --key-id "$NOTARY_API_KEY_ID" \
+        --issuer "$NOTARY_API_ISSUER_ID" \
+        --wait --timeout 30m --output-format json) || true
+    printf '%s\n' "$SUBMIT_JSON"
+    STATUS=$(printf '%s' "$SUBMIT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)
+    if [ "$STATUS" != "Accepted" ]; then
+        echo "Notarization failed (status: ${STATUS:-unknown})" >&2
+        SUBMISSION_ID=$(printf '%s' "$SUBMIT_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
+        if [ -n "$SUBMISSION_ID" ]; then
+            xcrun notarytool log "$SUBMISSION_ID" \
+                --key "$NOTARY_API_KEY_PATH" \
+                --key-id "$NOTARY_API_KEY_ID" \
+                --issuer "$NOTARY_API_ISSUER_ID" >&2 || true
+        fi
+        exit 1
+    fi
+
+    # Stapling can fail transiently until the ticket propagates to Apple's CDN.
+    echo "Stapling…"
+    for attempt in 1 2 3 4 5; do
+        if xcrun stapler staple "$APP"; then
+            break
+        fi
+        if [ "$attempt" = 5 ]; then
+            echo "stapler failed after $attempt attempts" >&2
+            exit 1
+        fi
+        echo "stapler failed (ticket may not have propagated yet), retrying in 10s…"
+        sleep 10
+    done
+
+    # Stapling modifies the bundle, so the zip and checksum must be rebuilt.
+    rm -f "$BUILD_DIR/$ZIP_NAME" "$BUILD_DIR/$ZIP_NAME.sha256"
+    ditto -c -k --keepParent "$APP" "$BUILD_DIR/$ZIP_NAME"
+    (cd "$BUILD_DIR" && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256")
+fi
 
 echo ""
 echo "Done: $APP"
