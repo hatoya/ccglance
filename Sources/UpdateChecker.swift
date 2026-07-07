@@ -5,7 +5,8 @@ import CryptoKit
 /// download the release zip → verify its SHA-256 against the published
 /// .sha256 asset → unpack → verify the code signature → swap the .app
 /// bundle → relaunch. Auto-install refuses to run without the checksum
-/// asset or from non-GitHub hosts (falls back to opening the release page).
+/// asset or from non-GitHub hosts (interactive installs fall back to
+/// opening the release page; automatic ones leave the banner for a click).
 /// Works with ad-hoc signing because zips downloaded by the app itself
 /// carry no quarantine attribute (we don't opt into LSFileQuarantineEnabled).
 final class UpdateChecker {
@@ -33,6 +34,7 @@ final class UpdateChecker {
     var onPhaseChange: ((Phase) -> Void)?
 
     private var timer: Timer?
+    private var interactiveInstall = true
     private let checkInterval: TimeInterval = 24 * 3600
     private let lastCheckKey = "ccglanceLastUpdateCheck"
 
@@ -125,16 +127,19 @@ final class UpdateChecker {
     // MARK: - Install
 
     /// Download the release zip, swap the running .app bundle, relaunch.
-    /// On any failure the old app is restored (or left untouched) and the
-    /// release page is opened as a fallback.
-    func installAvailableUpdate() {
+    /// On any failure the old app is restored (or left untouched).
+    /// interactive: true when triggered by a user click — failures then open
+    /// the release page as a fallback. false for automatic installs, which
+    /// must never pop a browser window on their own.
+    func installAvailableUpdate(interactive: Bool = true) {
         guard let release = available else { return }
         guard case .idle = phase else { return }        // already running
+        interactiveInstall = interactive
         // Refuse to auto-install without a checksum asset or from untrusted
         // hosts — fall back to the release page so the user installs manually.
         guard let zipURL = release.zipURL, let shaURL = release.shaURL,
               Self.isTrustedAssetURL(zipURL), Self.isTrustedAssetURL(shaURL) else {
-            NSWorkspace.shared.open(release.pageURL)
+            if interactive { NSWorkspace.shared.open(release.pageURL) }
             return
         }
         setPhase(.downloading)
@@ -291,9 +296,10 @@ final class UpdateChecker {
 
     private func fail(_ message: String, fallback release: Release) {
         DispatchQueue.main.async {
-            self.phase = .failed(message)
+            let interactive = self.interactiveInstall
+            self.phase = .failed(interactive ? message + " — opening release page" : message)
             self.onPhaseChange?(self.phase)
-            NSWorkspace.shared.open(release.pageURL)
+            if interactive { NSWorkspace.shared.open(release.pageURL) }
             // Let the user try again later
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                 if case .failed = self.phase {

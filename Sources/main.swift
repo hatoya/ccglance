@@ -585,6 +585,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         updateChecker.onUpdateAvailable = { [weak self] release in
             self?.showUpdateAvailable(release)
+            // Install automatically; failures keep the banner for a manual retry
+            self?.updateChecker.installAvailableUpdate(interactive: false)
         }
         updateChecker.onPhaseChange = { [weak self] phase in
             self?.showUpdatePhase(phase)
@@ -970,8 +972,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .installing:
             updateBanner.title = "Installing update…"
         case .failed(let message):
-            updateBanner.title = "⚠ \(message) — opening release page"
-            updateBanner.isEnabled = true
+            // Disabled while .failed — installAvailableUpdate would ignore the
+            // click anyway; re-enabled when the phase resets to .idle.
+            updateBanner.title = "⚠ \(message)"
+            updateBanner.isEnabled = false
         }
     }
 
