@@ -26,6 +26,8 @@ function write(id, state) {
       tool: state.tool || null,
       message: state.message || null,
       turnStartedAt: state.turnStartedAt ?? null,
+      agents: state.agents || null,
+      pr: state.pr || null,
       updatedAt: now,
     })
   );
@@ -37,12 +39,16 @@ function tick() {
   const now = Date.now() / 1000;
   const t = (now - start) % 24; // 24s loop
 
-  // Session 1: steadily working, timer already past 1 minute
+  // Session 1: steadily working with two subagents, timer already past 1 minute
   write(IDS[0], {
     project: "ccglance",
     title: "Translate README to English",
     status: "thinking",
     turnStartedAt: start - 74,
+    agents: [
+      { description: "Survey docs structure", type: "Explore", startedAt: start - 41 },
+      { description: "Draft translation", type: "general-purpose", startedAt: start - 23 },
+    ],
   });
 
   // Session 2: editing -> awaiting permission -> thinking, on a loop
@@ -56,11 +62,12 @@ function tick() {
   }
   write(IDS[1], { project: "my-webapp", title: "Fix login redirect", ...s2 });
 
-  // Session 3: finished
+  // Session 3: finished, PR open
   write(IDS[2], {
     project: "my-webapp",
     title: "Add unit tests",
     status: "idle",
+    pr: { number: 42, state: "OPEN", isDraft: false, url: null },
   });
 }
 
