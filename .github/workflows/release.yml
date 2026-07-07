@@ -24,6 +24,10 @@ jobs:
     timeout-minutes: 60
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # The `secrets` context is not allowed in step `if:` conditions, so
+      # collapse the presence checks into env flags here (env is allowed).
+      HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+      HAS_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,7 +45,7 @@ jobs:
       # steps are skipped and the build falls back to ad-hoc signing exactly
       # as before. Setup guide: docs/NOTARIZATION.md
       - name: Import signing certificate
-        if: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -71,7 +75,7 @@ jobs:
 
       # notarytool needs the .p8 as a file; only the path goes into GITHUB_ENV.
       - name: Prepare notarization API key
-        if: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+        if: ${{ env.HAS_NOTARY_KEY == 'true' }}
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
