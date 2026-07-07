@@ -68,6 +68,68 @@ function saveState(state) {
   fs.renameSync(tmp, file);
 }
 
+// Each hook event runs as a separate process, and tool events from a running
+// subagent share the parent's session_id — so concurrent load-modify-save on
+// the same session file loses updates (e.g. three agents launched in parallel
+// recording only one). A per-session lock file serializes writers. A crashed
+// holder's lock goes stale and is stolen; if the lock can't be acquired within
+// LOCK_WAIT_MS we proceed unlocked rather than stall Claude Code.
+const LOCK_STALE_MS = 5000;
+const LOCK_WAIT_MS = 2000;
+
+let heldLock = null;
+process.on("exit", () => {
+  if (!heldLock) return;
+  // Only unlink a lock that is still ours — after LOCK_STALE_MS it may have
+  // been stolen and re-created by another hook process
+  try {
+    if (fs.readFileSync(heldLock, "utf8") === String(process.pid)) {
+      fs.unlinkSync(heldLock);
+    }
+  } catch {}
+});
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function acquireLock(sessionId) {
+  try {
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  } catch {
+    return;
+  }
+  const lock = `${stateFile(sessionId)}.lock`;
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const fd = fs.openSync(lock, "wx");
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      heldLock = lock;
+      return;
+    } catch (e) {
+      // Anything but "already locked" (EACCES, ENOSPC, …) won't heal by
+      // retrying — proceed unlocked instead of busy-looping
+      if (e.code !== "EEXIST") return;
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS) {
+          // Steal via rename: two thieves both unlinking could remove the
+          // fresh lock the faster one just re-created
+          const grave = `${lock}.${process.pid}.stale`;
+          fs.renameSync(lock, grave);
+          fs.unlinkSync(grave);
+          continue;
+        }
+      } catch {
+        continue; // lock vanished (or lost the steal race) — retry immediately
+      }
+      await sleep(15 + Math.floor(Math.random() * 30));
+    }
+  }
+  // Deadline passed — proceed unlocked rather than stall Claude Code
+}
+
 // Desktop session title: the name shown/edited in the Claude Desktop app is NOT
 // written to the transcript. It lives in the Desktop app's own store:
 //   ~/Library/Application Support/Claude/claude-code-sessions/<ws>/<x>/local_<id>.json
@@ -171,8 +233,11 @@ function projectFromCwd(cwd) {
 }
 
 // Running-subagent tracking: PreToolUse on an agent tool pushes an entry,
-// PostToolUse removes the matching one. tool_input.description is present on
-// both events, so it doubles as the correlation key.
+// PostToolUse removes the matching one. tool_use_id (present on both events in
+// newer builds) is the correlation key, with tool_input.description as the
+// fallback. Background agents (run_in_background) are not tracked: their tool
+// call returns a task id immediately, so PostToolUse fires while the agent is
+// still running and the row would be wrong either way.
 function agentDescription(input) {
   const ti = input.tool_input || {};
   const d =
@@ -182,10 +247,16 @@ function agentDescription(input) {
   return d ? d.slice(0, 120) : null;
 }
 
+function isBackgroundAgent(input) {
+  const ti = input.tool_input || {};
+  return ti.run_in_background === true;
+}
+
 function pushAgent(base, input, now) {
   const ti = input.tool_input || {};
   const agents = Array.isArray(base.agents) ? base.agents : [];
   agents.push({
+    id: typeof input.tool_use_id === "string" ? input.tool_use_id : null,
     description: agentDescription(input),
     type: typeof ti.subagent_type === "string" ? ti.subagent_type : null,
     startedAt: now,
@@ -195,8 +266,12 @@ function pushAgent(base, input, now) {
 
 function removeAgent(base, input) {
   if (!Array.isArray(base.agents) || base.agents.length === 0) return;
-  const desc = agentDescription(input);
-  let i = base.agents.findIndex((a) => a && a.description === desc);
+  const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
+  let i = id ? base.agents.findIndex((a) => a && a.id === id) : -1;
+  if (i < 0) {
+    const desc = agentDescription(input);
+    i = base.agents.findIndex((a) => a && a.description === desc);
+  }
   if (i < 0) i = 0; // no match (e.g. truncated description) — drop the oldest
   base.agents.splice(i, 1);
 }
@@ -246,20 +321,23 @@ function runGhPrView(cwd, candidates, done) {
 }
 
 function fetchPr(sessionId, cwd) {
-  runGhPrView(cwd, GH_CANDIDATES, (pr) => {
-    if (pr === undefined) return process.exit(0);
-    // Merge only the pr field into the freshest state; the session may have
-    // moved on (or ended) while gh was running.
-    const state = loadState(sessionId);
-    if (!state) return process.exit(0);
-    if (pr) state.pr = pr;
-    else delete state.pr;
-    // Re-check right before writing: SessionEnd may have deleted the file
-    // while gh was running, and this write must not resurrect the session
-    if (!fs.existsSync(stateFile(sessionId))) return process.exit(0);
-    // Leave updatedAt untouched so this write never extends the 12h pruning
-    saveState(state);
-    process.exit(0);
+  runGhPrView(cwd, GH_CANDIDATES, async (pr) => {
+    try {
+      if (pr !== undefined) {
+        await acquireLock(sessionId);
+        // Merge only the pr field into the freshest state; the session may have
+        // moved on while gh was running, and if SessionEnd deleted the file this
+        // write must not resurrect it (loadState returns null once it's gone).
+        const state = loadState(sessionId);
+        if (state) {
+          if (pr) state.pr = pr;
+          else delete state.pr;
+          // Leave updatedAt untouched so this write never extends the 12h pruning
+          saveState(state);
+        }
+      }
+    } catch {}
+    process.exit(0); // the exit handler releases the lock
   });
 }
 
@@ -304,6 +382,21 @@ async function main() {
     process.exit(0);
   }
 
+  // Refresh the session title on turn boundaries (skipped on every
+  // PreToolUse/PostToolUse to stay fast). Resolved before taking the lock:
+  // desktopTitle walks a directory tree and sessionTitle reads up to 512KB,
+  // and neither needs the state file — holding the lock across them would
+  // push concurrent hooks past LOCK_WAIT_MS into the unlocked fallback.
+  const ev = input.hook_event_name;
+  let title = null;
+  if (ev === "SessionStart" || ev === "UserPromptSubmit" || ev === "Stop" || ev === "Notification") {
+    // Desktop store first (the title editable in Claude Desktop), then the
+    // transcript (CLI / SDK renames), otherwise keep what we had.
+    title = desktopTitle(sessionId) || sessionTitle(input.transcript_path);
+  }
+
+  await acquireLock(sessionId);
+
   const now = Date.now() / 1000;
   const prev = loadState(sessionId);
   const base = prev || {
@@ -323,15 +416,7 @@ async function main() {
     base.cwd = input.cwd;
     base.project = projectFromCwd(input.cwd) || base.project;
   }
-  // Refresh the session title on turn boundaries (cheap enough; skipped on
-  // every PreToolUse/PostToolUse to stay fast).
-  const ev = input.hook_event_name;
-  if (ev === "SessionStart" || ev === "UserPromptSubmit" || ev === "Stop" || ev === "Notification") {
-    // Desktop store first (the title editable in Claude Desktop), then the
-    // transcript (CLI / SDK renames), otherwise keep what we had.
-    const t = desktopTitle(sessionId) || sessionTitle(input.transcript_path);
-    if (t) base.title = t;
-  }
+  if (title) base.title = title;
   base.updatedAt = now;
 
   switch (input.hook_event_name) {
@@ -366,7 +451,9 @@ async function main() {
         base.status = "tool";
         base.tool = TOOL_LABELS[input.tool_name] || "Using tool";
         base.message = null;
-        if (AGENT_TOOLS.has(input.tool_name)) pushAgent(base, input, now);
+        if (AGENT_TOOLS.has(input.tool_name) && !isBackgroundAgent(input)) {
+          pushAgent(base, input, now);
+        }
       }
       if (base.turnStartedAt == null) base.turnStartedAt = now;
       saveState(base);
@@ -376,7 +463,9 @@ async function main() {
       base.status = "thinking";
       base.tool = null;
       base.message = null;
-      if (AGENT_TOOLS.has(input.tool_name)) removeAgent(base, input);
+      if (AGENT_TOOLS.has(input.tool_name) && !isBackgroundAgent(input)) {
+        removeAgent(base, input);
+      }
       saveState(base);
       break;
 
