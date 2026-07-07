@@ -3,6 +3,12 @@ import CoreText
 
 // MARK: - Session state model (written by hooks/ccglance-hook.js)
 
+struct AgentTask: Codable {
+    var description: String?
+    var type: String?       // subagent_type ("Explore", "general-purpose", …)
+    var startedAt: Double?
+}
+
 struct PRInfo: Codable {
     var number: Int?
     var state: String?    // "OPEN" | "MERGED" | "CLOSED"
@@ -21,6 +27,7 @@ struct SessionState: Codable {
     var message: String?
     var turnStartedAt: Double?
     var updatedAt: Double
+    var agents: [AgentTask]?  // running subagents (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
 }
 
@@ -395,6 +402,93 @@ final class SessionRowView: NSView {
     }
 }
 
+// MARK: - Agent row view (running subagent, indented under its session row)
+
+final class AgentRowView: NSView {
+    static let height: CGFloat = 24
+
+    let treeGlyph = NSTextField(labelWithString: "└")
+    let spark = NSTextField(labelWithString: "")
+    let descLabel = NSTextField(labelWithString: "")
+    let timeLabel = NSTextField(labelWithString: "")
+    private let separator = NSBox()
+
+    var showsSeparator: Bool = false {
+        didSet { separator.isHidden = !showsSeparator }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+
+        // Same font sizes as SessionRowView; dimmer colors keep the hierarchy
+        treeGlyph.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        treeGlyph.textColor = .tertiaryLabelColor
+        treeGlyph.alignment = .center
+        spark.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        spark.textColor = Theme.orange
+        spark.alignment = .center
+        descLabel.font = NSFont.systemFont(ofSize: 12)
+        descLabel.textColor = .secondaryLabelColor
+        descLabel.lineBreakMode = .byTruncatingTail
+        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        timeLabel.textColor = .secondaryLabelColor
+        timeLabel.alignment = .right
+
+        // Same rule as SessionRowView: the description compresses first, the
+        // elapsed time on the right never does.
+        descLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        timeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        separator.boxType = .separator
+        separator.isHidden = true
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(separator)
+
+        for v in [treeGlyph, spark, descLabel, timeLabel] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+
+        NSLayoutConstraint.activate([
+            // Same column as the session row's glyph
+            treeGlyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            treeGlyph.widthAnchor.constraint(equalToConstant: 16),
+            treeGlyph.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            spark.leadingAnchor.constraint(equalTo: treeGlyph.trailingAnchor, constant: 4),
+            spark.widthAnchor.constraint(equalToConstant: 16),
+            spark.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            descLabel.leadingAnchor.constraint(equalTo: spark.trailingAnchor, constant: 5),
+            descLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            descLabel.trailingAnchor.constraint(lessThanOrEqualTo: timeLabel.leadingAnchor, constant: -8),
+
+            timeLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            timeLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            separator.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            separator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            separator.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func update(_ agent: AgentTask, sparkIndex: Int, now: TimeInterval) {
+        spark.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
+        let name = (agent.description?.isEmpty == false) ? agent.description!
+            : (agent.type?.isEmpty == false) ? agent.type! : "agent"
+        descLabel.stringValue = name
+        if let start = agent.startedAt {
+            let sec = max(0, Int(now - start))
+            timeLabel.stringValue = sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s"
+        } else {
+            timeLabel.stringValue = ""
+        }
+    }
+}
+
 // MARK: - Floating panel
 
 final class StatusPanel: NSPanel {
@@ -459,6 +553,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var updateMenuItem: NSMenuItem!
     private let updateChecker = UpdateChecker()
     private var rows: [SessionRowView] = []
+    private var agentRows: [AgentRowView] = []
     private var groupHeaders: [GroupHeaderView] = []
     private var lastSignature = ""
     private var animTimer: Timer?
@@ -647,13 +742,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .map { (name: $0.key, sessions: $0.value) }
             .sorted { $0.name.lowercased() < $1.name.lowercased() }
 
-        // Rebuild views only when the group structure changes
-        let signature = grouped.map { "\($0.name)#\($0.sessions.count)" }.joined(separator: "|")
+        // Rebuild views only when the group structure (or agent counts) changes
+        let signature = grouped.map { group in
+            let agentCounts = group.sessions.map { String($0.agents?.count ?? 0) }.joined(separator: ",")
+            return "\(group.name)#\(group.sessions.count)#\(agentCounts)"
+        }.joined(separator: "|")
         if signature != lastSignature {
             lastSignature = signature
             for v in stack.arrangedSubviews { stack.removeArrangedSubview(v); v.removeFromSuperview() }
             groupHeaders = []
             rows = []
+            agentRows = []
             for group in grouped {
                 let header = GroupHeaderView(frame: .zero)
                 header.label.stringValue = group.name
@@ -665,7 +764,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     header.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
                 ])
                 groupHeaders.append(header)
-                for _ in group.sessions {
+                for session in group.sessions {
                     let row = SessionRowView(frame: .zero)
                     row.translatesAutoresizingMaskIntoConstraints = false
                     stack.addArrangedSubview(row)
@@ -675,16 +774,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         row.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
                     ])
                     rows.append(row)
+                    for _ in session.agents ?? [] {
+                        let agentRow = AgentRowView(frame: .zero)
+                        agentRow.translatesAutoresizingMaskIntoConstraints = false
+                        stack.addArrangedSubview(agentRow)
+                        NSLayoutConstraint.activate([
+                            agentRow.heightAnchor.constraint(equalToConstant: AgentRowView.height),
+                            agentRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+                            agentRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+                        ])
+                        agentRows.append(agentRow)
+                    }
                 }
             }
         }
         var rowIndex = 0
+        var agentRowIndex = 0
         for group in grouped {
             for (j, session) in group.sessions.enumerated() {
                 guard rowIndex < rows.count else { break }
                 rows[rowIndex].update(session, sparkIndex: sparkIndex, now: now)
-                // border only between rows within a group
-                rows[rowIndex].showsSeparator = j < group.sessions.count - 1
+                let agents = session.agents ?? []
+                // border after every visual row except the group's last one
+                let isLastInGroup = j == group.sessions.count - 1
+                rows[rowIndex].showsSeparator = !agents.isEmpty || !isLastInGroup
+                for (k, agent) in agents.enumerated() {
+                    guard agentRowIndex < agentRows.count else { break }
+                    agentRows[agentRowIndex].update(agent, sparkIndex: sparkIndex, now: now)
+                    agentRows[agentRowIndex].showsSeparator = !(isLastInGroup && k == agents.count - 1)
+                    agentRowIndex += 1
+                }
                 rowIndex += 1
             }
         }
@@ -710,10 +829,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Height follows content; width is the user's (horizontal resize only).
         let crabArea = ClawdView.topMargin + crab.intrinsicContentSize.height + ClawdView.bottomMargin
+        let agentCount = sessions.reduce(0) { $0 + ($1.agents?.count ?? 0) }
         var contentHeight: CGFloat = crabArea + (sessions.isEmpty
             ? 30
             : CGFloat(grouped.count) * GroupHeaderView.height
-                + CGFloat(sessions.count) * SessionRowView.height + 8)
+                + CGFloat(sessions.count) * SessionRowView.height
+                + CGFloat(agentCount) * AgentRowView.height + 8)
         if !updateBanner.isHidden {
             contentHeight += 24  // room for the update banner at the bottom
         }

@@ -22,7 +22,12 @@ const TOOL_LABELS = {
   WebFetch: "Browsing",
   WebSearch: "Browsing",
   Task: "Running agent",
+  Agent: "Running agent",
 };
+
+// Subagent-spawning tools ("Task" classically, "Agent" in newer builds)
+const AGENT_TOOLS = new Set(["Task", "Agent"]);
+const MAX_AGENTS = 10;
 
 // Tools that pause and wait for the user to respond
 const INPUT_TOOLS = {
@@ -165,6 +170,37 @@ function projectFromCwd(cwd) {
   return path.basename(cwd);
 }
 
+// Running-subagent tracking: PreToolUse on an agent tool pushes an entry,
+// PostToolUse removes the matching one. tool_input.description is present on
+// both events, so it doubles as the correlation key.
+function agentDescription(input) {
+  const ti = input.tool_input || {};
+  const d =
+    typeof ti.description === "string"
+      ? ti.description.replace(/[\x00-\x1f\x7f]+/g, " ").trim()
+      : "";
+  return d ? d.slice(0, 120) : null;
+}
+
+function pushAgent(base, input, now) {
+  const ti = input.tool_input || {};
+  const agents = Array.isArray(base.agents) ? base.agents : [];
+  agents.push({
+    description: agentDescription(input),
+    type: typeof ti.subagent_type === "string" ? ti.subagent_type : null,
+    startedAt: now,
+  });
+  base.agents = agents.slice(-MAX_AGENTS);
+}
+
+function removeAgent(base, input) {
+  if (!Array.isArray(base.agents) || base.agents.length === 0) return;
+  const desc = agentDescription(input);
+  let i = base.agents.findIndex((a) => a && a.description === desc);
+  if (i < 0) i = 0; // no match (e.g. truncated description) — drop the oldest
+  base.agents.splice(i, 1);
+}
+
 function launchApp() {
   // Best effort: bring ccglance up when a session starts (ignore failures)
   execFile("open", ["-g", "-a", "ccglance"], () => {});
@@ -303,6 +339,7 @@ async function main() {
       base.status = "idle";
       base.tool = null;
       base.turnStartedAt = null;
+      base.agents = [];
       saveState(base);
       launchApp();
       spawnPrFetch(sessionId, base.cwd);
@@ -313,6 +350,7 @@ async function main() {
       base.tool = null;
       base.message = null;
       base.turnStartedAt = now;
+      base.agents = [];
       saveState(base);
       break;
 
@@ -328,6 +366,7 @@ async function main() {
         base.status = "tool";
         base.tool = TOOL_LABELS[input.tool_name] || "Using tool";
         base.message = null;
+        if (AGENT_TOOLS.has(input.tool_name)) pushAgent(base, input, now);
       }
       if (base.turnStartedAt == null) base.turnStartedAt = now;
       saveState(base);
@@ -337,6 +376,7 @@ async function main() {
       base.status = "thinking";
       base.tool = null;
       base.message = null;
+      if (AGENT_TOOLS.has(input.tool_name)) removeAgent(base, input);
       saveState(base);
       break;
 
@@ -357,6 +397,7 @@ async function main() {
       base.tool = null;
       base.message = null;
       base.turnStartedAt = null;
+      base.agents = [];
       saveState(base);
       spawnPrFetch(sessionId, base.cwd);
       break;
