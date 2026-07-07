@@ -4,6 +4,7 @@ import CoreText
 // MARK: - Session state model (written by hooks/ccglance-hook.js)
 
 struct AgentTask: Codable {
+    var id: String?          // tool_use_id (correlation key; must survive re-encoding)
     var description: String?
     var type: String?       // subagent_type ("Explore", "general-purpose", …)
     var startedAt: Double?
@@ -40,12 +41,22 @@ enum StateStore {
     /// Load all session files. Prunes files not updated for 12h (crashed sessions).
     static func load() -> [SessionState] {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else {
+        guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: [.contentModificationDateKey]) else {
             return []
         }
         let now = Date().timeIntervalSince1970
         var result: [SessionState] = []
-        for url in files where url.pathExtension == "json" {
+        for url in files {
+            guard url.pathExtension == "json" else {
+                // .lock/.tmp residue from hook processes killed mid-write; live
+                // ones never survive more than seconds, so an hour is safe
+                let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantFuture
+                if now - mtime.timeIntervalSince1970 > 3600 {
+                    try? fm.removeItem(at: url)
+                }
+                continue
+            }
             guard let data = try? Data(contentsOf: url),
                   let state = try? JSONDecoder().decode(SessionState.self, from: data) else { continue }
             if now - state.updatedAt > 12 * 3600 {
