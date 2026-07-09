@@ -29,7 +29,7 @@ Either way, launch the app once — on first launch it wires up the Claude Code 
 
 > Releases are Developer ID signed and notarized, so Gatekeeper runs them without any extra approval steps.
 
-Requires macOS 12+, [Claude Code](https://claude.com/claude-code) (CLI or Desktop app), and Node.js (for the hooks script).
+Requires an Apple Silicon Mac running macOS 12+, [Claude Code](https://claude.com/claude-code) (CLI or Desktop app), and Node.js (for the hooks script). Intel Macs are not supported by the prebuilt releases (build from source instead).
 
 If the automatic hook setup doesn't work, run it manually:
 

@@ -106,7 +106,7 @@ docs/                    # README用アセット（demo.gif、ダウンロード
 
 ## 技術スタック
 
-- Swift / AppKit（macOS 12+、swiftcで直接ビルド、外部パッケージ依存なし）
+- Swift / AppKit（macOS 12+、swiftcで直接ビルド、外部パッケージ依存なし。リリースバイナリはarm64のみでIntel Macは非対応）
 - Node.js hooks（外部npm依存ゼロ、CommonJS、`"use strict"`）
 - ad-hoc署名（Secrets設定時のみCIでDeveloper ID署名 + notarize。`docs/NOTARIZATION.md` 参照）
 - GitHub Actions（リリースビルド）
