@@ -726,11 +726,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateMenuItem.isHidden = true
         menu.addItem(withTitle: "Check for updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshTitles), keyEquivalent: "r")
+        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshTitles), keyEquivalent: "")
         menu.addItem(withTitle: "Clear finished sessions", action: #selector(clearIdle), keyEquivalent: "")
         menu.addItem(withTitle: "Reinstall Claude Code hooks", action: #selector(reinstallHooks), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "")
         for item in menu.items { item.target = self }
         effect.menu = menu
 
