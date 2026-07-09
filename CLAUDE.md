@@ -102,6 +102,7 @@ docs/                    # README用アセット（demo.gif、ダウンロード
 2. `v<VERSION>` タグでGitHub Releaseを作成し、changelogエントリをリリースノートに貼る
 3. 公開と同時に `release.yml` がmacOSランナーでビルドし、`ccglance.zip` と `ccglance.zip.sha256` を自動添付する（両方ともアプリ内アップデーターに必須。zip名は `releases/latest/download/ccglance.zip` の固定リンクを維持するため無バージョン）
 4. 署名用のGitHub Secretsが設定済みの場合、CIが自動でDeveloper ID署名 + notarize + stapleを行う。未設定ならad-hoc署名にフォールバックする（セットアップ手順は `docs/NOTARIZATION.md`）
+5. `TAP_GITHUB_TOKEN` が設定済みの場合、CIがHomebrew tap（`hatoya/homebrew-tap` の `Casks/ccglance.rb`）のversion/sha256を自動更新する。未設定ならスキップされる（セットアップ手順は `docs/HOMEBREW.md`）
 
 ## 技術スタック
 
