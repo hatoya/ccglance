@@ -12,16 +12,24 @@ First install is just the button above: download, unzip, drag the app into Appli
 
 ## Install
 
+**Homebrew** (Apple Silicon):
+
+```bash
+brew install --cask hatoya/tap/ccglance
+```
+
+**Manual download:**
+
 1. [Download the latest `ccglance.zip`](https://github.com/hatoya/ccglance/releases/latest/download/ccglance.zip) and unzip it.
 2. Drag **ccglance.app** into Applications.
-3. Launch it once — on first launch it wires up the Claude Code hooks automatically (appends to `~/.claude/settings.json`; existing hooks are left untouched, and a backup is saved as `settings.json.bak-ccglance`).
-4. Start a new Claude Code session — the panel appears and tracks it.
+
+Either way, launch the app once — on first launch it wires up the Claude Code hooks automatically (appends to `~/.claude/settings.json`; existing hooks are left untouched, and a backup is saved as `settings.json.bak-ccglance`). Then start a new Claude Code session — the panel appears and tracks it.
 
 > **If Claude Code is already open, restart it (or start a new session) once.** Hooks are loaded when a session starts.
 
-> The app is ad-hoc signed (not notarized), so the first launch may be blocked by Gatekeeper. Right-click the app → **Open** → **Open** to approve it once.
+> Releases are Developer ID signed and notarized, so Gatekeeper runs them without any extra approval steps.
 
-Requires macOS 12+, [Claude Code](https://claude.com/claude-code) (CLI or Desktop app), and Node.js (for the hooks script).
+Requires an Apple Silicon Mac running macOS 12+, [Claude Code](https://claude.com/claude-code) (CLI or Desktop app), and Node.js (for the hooks script). Intel Macs are not supported by the prebuilt releases (build from source instead).
 
 If the automatic hook setup doesn't work, run it manually:
 
@@ -83,6 +91,8 @@ Clicking either one **updates in place**: it downloads the release zip → unpac
 
 To check manually, use "Check for updates…" in the right-click menu.
 
+Homebrew installs update the same way — the cask is marked `auto_updates`, so plain `brew upgrade` leaves the self-updating app alone (`brew upgrade --greedy` reinstalls it from the tap if you prefer managing updates through Homebrew).
+
 ### Updating manually
 
 If you prefer not to use the in-app updater (or it can't run, e.g. the release has no zip asset):
@@ -96,6 +106,7 @@ Release procedure (for maintainers):
 1. Bump `VERSION` in `build.sh` and add the version's entry to `CHANGELOG.md` — list only what changed since the previous release
 2. Create a GitHub Release tagged `v<VERSION>` and paste the changelog entry as the release notes
 3. On publish, the [release workflow](.github/workflows/release.yml) builds the app on a macOS runner and attaches `ccglance.zip` and `ccglance.zip.sha256` automatically (both are required by the in-app updater; the workflow syncs the build version to the tag, so a missed bump still produces a correct zip)
+4. The workflow then updates the [Homebrew tap](https://github.com/hatoya/homebrew-tap) cask to the new version (requires the `TAP_GITHUB_TOKEN` secret — see [docs/HOMEBREW.md](docs/HOMEBREW.md); skipped when unset)
 
 `./build.sh` still works locally for development, and `gh release upload <tag> build/ccglance.zip build/ccglance.zip.sha256 --clobber` is the manual fallback if the workflow is unavailable. The zip name is unversioned so the `releases/latest/download/ccglance.zip` link always works. The repository to check can be changed via `UpdateChecker.repo` in `Sources/UpdateChecker.swift`.
 
@@ -105,7 +116,7 @@ Release procedure (for maintainers):
 node "/Applications/ccglance.app/Contents/Resources/uninstall.js"
 ```
 
-Then move the app to the Trash. Only ccglance's hooks are removed; any other hooks are left intact.
+Then move the app to the Trash (or, for Homebrew installs, run `brew uninstall --cask ccglance` instead). Only ccglance's hooks are removed; any other hooks are left intact.
 
 ## Built with Claude / not affiliated
 
