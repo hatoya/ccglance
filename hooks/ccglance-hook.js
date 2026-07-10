@@ -408,6 +408,7 @@ async function main() {
     tool: null,
     message: null,
     turnStartedAt: null,
+    createdAt: now,
     updatedAt: now,
   };
   // Only trust cwd when the event actually carries it — never fall back to
