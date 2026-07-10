@@ -28,6 +28,7 @@ jobs:
       # collapse the presence checks into env flags here (env is allowed).
       HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
       HAS_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+      HAS_TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,6 +99,40 @@ jobs:
             build/ccglance.zip \
             build/ccglance.zip.sha256 \
             --clobber
+
+      # Keeps the Homebrew tap cask (hatoya/homebrew-tap) in sync with the
+      # release. Opt-in like signing: skipped until TAP_GITHUB_TOKEN — a
+      # fine-grained PAT with Contents read/write on the tap repo — is set.
+      # Setup guide: docs/HOMEBREW.md
+      - name: Update Homebrew tap
+        if: ${{ env.HAS_TAP_TOKEN == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          SHA256=$(cut -d' ' -f1 build/ccglance.zip.sha256)
+          gh auth setup-git
+          git clone --depth 1 https://github.com/hatoya/homebrew-tap.git "$RUNNER_TEMP/homebrew-tap"
+          CASK="$RUNNER_TEMP/homebrew-tap/Casks/ccglance.rb"
+          sed -i '' \
+            -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+            -e "s/^  sha256 \".*\"/  sha256 \"$SHA256\"/" \
+            "$CASK"
+          # Fail loudly if the cask's line format drifted and sed matched
+          # nothing — otherwise the "already up to date" branch would hide it.
+          if ! grep -q "^  version \"$VERSION\"" "$CASK" || ! grep -q "^  sha256 \"$SHA256\"" "$CASK"; then
+            echo "Cask update failed: version/sha256 lines not found in $CASK" >&2
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/homebrew-tap"
+          if git diff --quiet; then
+            echo "Cask already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "ccglance $VERSION"
+          git push
 
       - name: Clean up signing material
         if: always()

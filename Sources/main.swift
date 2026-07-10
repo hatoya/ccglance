@@ -27,6 +27,7 @@ struct SessionState: Codable {
     var tool: String?
     var message: String?
     var turnStartedAt: Double?
+    var createdAt: Double?   // set once at SessionStart (optional: older files lack it)
     var updatedAt: Double
     var agents: [AgentTask]?  // running subagents (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
@@ -73,20 +74,20 @@ enum StateStore {
         }
     }
 
-    /// Look up the Desktop-app session title (editable in Claude Desktop) for a
-    /// CLI session id. Store layout:
+    /// Look up the Desktop-app session titles (editable in Claude Desktop) for
+    /// a set of CLI session ids in a single store walk. Store layout:
     ///   ~/Library/Application Support/Claude/claude-code-sessions/<ws>/<x>/local_<id>.json
     ///   { "title": ..., "cliSessionId": ..., "bridgeSessionIds": [...] }
-    static func desktopTitle(for sessionId: String) -> String? {
+    static func desktopTitles(for sessionIds: Set<String>) -> [String: String] {
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) else { return nil }
+        ) else { return [:] }
 
-        var best: (title: String, mtime: Date)?
+        var best: [String: (title: String, mtime: Date)] = [:]
         for case let url as URL in enumerator where url.pathExtension == "json" {
             guard let data = try? Data(contentsOf: url),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
@@ -95,28 +96,39 @@ enum StateStore {
                 if let v = obj[key] as? String { ids.append(v) }
             }
             if let bridged = obj["bridgeSessionIds"] as? [String] { ids += bridged }
-            guard ids.contains(sessionId),
-                  let raw = obj["title"] as? String else { continue }
+            guard let raw = obj["title"] as? String else { continue }
             let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { continue }
             let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
-            if best == nil || mtime > best!.mtime {
-                best = (title, mtime)
+            for id in ids where sessionIds.contains(id) {
+                if best[id] == nil || mtime > best[id]!.mtime {
+                    best[id] = (title, mtime)
+                }
             }
         }
-        return best?.title
+        return best.mapValues { $0.title }
     }
 
-    /// Re-resolve titles for all current sessions and persist them into the
-    /// state files (hooks preserve the field afterwards).
-    static func refreshTitles() {
+    /// Re-resolve titles and persist them into the state files (hooks preserve
+    /// the field afterwards). Pass `only` to restrict to specific session ids.
+    static func refreshTitles(only: Set<String>? = nil) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else { return }
-        for url in files where url.pathExtension == "json" {
+        // State files are named <session_id>.json, so ids resolve without decoding
+        let jsonFiles = files.filter { $0.pathExtension == "json" }
+        var targets = Set(jsonFiles.map { $0.deletingPathExtension().lastPathComponent })
+        if let only { targets.formIntersection(only) }
+        guard !targets.isEmpty else { return }
+        let titles = desktopTitles(for: targets)
+        for url in jsonFiles {
+            guard let title = titles[url.deletingPathExtension().lastPathComponent] else { continue }
+            // Read right before writing: the store walk above takes a while and
+            // hooks may have rewritten (or removed) the file meanwhile — merge
+            // only the title into the freshest state to keep the race window tiny
             guard let data = try? Data(contentsOf: url),
-                  var state = try? JSONDecoder().decode(SessionState.self, from: data) else { continue }
-            guard let title = desktopTitle(for: state.sessionId), title != state.title else { continue }
+                  var state = try? JSONDecoder().decode(SessionState.self, from: data),
+                  state.title != title else { continue }
             state.title = title
             if let out = try? JSONEncoder().encode(state) {
                 try? out.write(to: url, options: .atomic)
@@ -328,9 +340,17 @@ final class SessionRowView: NSView {
 
     func update(_ s: SessionState, sparkIndex: Int, now: TimeInterval) {
         // The project name lives in the group header; the row shows the
-        // session title (editable in Claude Desktop) or the id as a fallback.
-        let name = (s.title?.isEmpty == false) ? s.title!
-            : "Session " + String(s.sessionId.prefix(8))
+        // session title (editable in Claude Desktop). While the title is
+        // still being generated (fresh session) show a placeholder instead
+        // of the raw id; fall back to the id once the grace period passes.
+        let name: String
+        if s.title?.isEmpty == false {
+            name = s.title!
+        } else if let created = s.createdAt, now - created < 30 {
+            name = "New session…"
+        } else {
+            name = "Session " + String(s.sessionId.prefix(8))
+        }
         projectLabel.stringValue = name
 
         func elapsedString() -> String {
@@ -572,6 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var sparkIndex = 0
     private var crabFrame = 0
     private var sessions: [SessionState] = []
+    private var isRefreshingUntitled = false
 
     private let defaultWidth: CGFloat = 300
     private let minWidth: CGFloat = 220
@@ -726,11 +747,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateMenuItem.isHidden = true
         menu.addItem(withTitle: "Check for updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshTitles), keyEquivalent: "r")
+        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshTitles), keyEquivalent: "")
         menu.addItem(withTitle: "Clear finished sessions", action: #selector(clearIdle), keyEquivalent: "")
         menu.addItem(withTitle: "Reinstall Claude Code hooks", action: #selector(reinstallHooks), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "")
         for item in menu.items { item.target = self }
         effect.menu = menu
 
@@ -753,6 +774,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Refresh PR status every 60s so merges/closes done outside a session
         // show up without waiting for the next turn boundary
         if tickCount % 600 == 0 { refreshPRStatuses() }
+
+        // Fresh sessions start without a title (Claude Desktop generates it a
+        // few seconds after the first prompt, but hooks only re-resolve it on
+        // turn boundaries). Poll the Desktop store every 2s for recently
+        // created untitled sessions so the name lands mid-turn. Capped at 5min
+        // so sessions that never get a title stop triggering the store walk.
+        if tickCount % 20 == 0, !isRefreshingUntitled {
+            let untitled = Set(sessions.compactMap { s -> String? in
+                guard s.title?.isEmpty != false,
+                      let created = s.createdAt, now - created < 300 else { return nil }
+                return s.sessionId
+            })
+            if !untitled.isEmpty {
+                isRefreshingUntitled = true
+                DispatchQueue.global(qos: .utility).async { [weak self] in
+                    StateStore.refreshTitles(only: untitled)
+                    DispatchQueue.main.async { self?.isRefreshingUntitled = false }
+                }
+            }
+        }
 
         // Group sessions by project (directory name)
         let grouped = Dictionary(grouping: sessions) { $0.project ?? "\u{2014}" }
