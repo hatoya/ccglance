@@ -1,5 +1,11 @@
 # ccglance
 
+[![Latest release](https://img.shields.io/github/v/release/hatoya/ccglance)](https://github.com/hatoya/ccglance/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/hatoya/ccglance/total)](https://github.com/hatoya/ccglance/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![macOS 12+](https://img.shields.io/badge/macOS-12%2B%20(arm64)-black?logo=apple)
+[![Release build](https://github.com/hatoya/ccglance/actions/workflows/release.yml/badge.svg?event=release)](https://github.com/hatoya/ccglance/actions/workflows/release.yml)
+
 A macOS app that shows Claude Code activity in an **always-on-top floating panel** instead of the menu bar. Park it in a corner of a secondary display and see at a glance which sessions are working, awaiting permission (yellow pulse), or finished.
 
 It uses the same hooks mechanism as [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), but shows multiple sessions at once.
