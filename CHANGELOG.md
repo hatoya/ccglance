@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.5.4
+
+- Replace release-drafter with GitHub's auto-generated release notes (categorized by PR label via `.github/release.yml`), removing the standing notes draft that could be hand-published into a broken immutable release
+
 ## v1.5.3
 
 - Regenerate the social preview image with the new Retina demo frame and the icon wordmark as its title
