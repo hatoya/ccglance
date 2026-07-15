@@ -2,7 +2,14 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.5.2
+
+- Re-release of v1.5.1: pushing the tag auto-published release-drafter's draft (which named the same tag) before the workflow could attach assets, leaving an immutable asset-less release
+- The drafter's placeholder tag name no longer matches real release tags, so tag pushes can't publish the notes draft
+
 ## v1.5.1
+
+Published without release assets — superseded by v1.5.2.
 
 - Re-release of v1.5.0, which was published without its zip/sha256 assets (GitHub immutable releases reject asset uploads after publishing, which broke the publish-triggered release workflow)
 - Release workflow now runs on tag push and publishes via draft → attach assets → publish, compatible with immutable releases

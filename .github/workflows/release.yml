@@ -118,9 +118,10 @@ jobs:
             exit 1
           fi
           if [ "$STATE" = "missing" ]; then
-            # Only the release-drafter bot's draft — never a hand-made WIP draft.
+            # Only the release-drafter bot's notes draft (placeholder tag) —
+            # never a hand-made WIP draft or a leftover draft from a failed run.
             DRAFT=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
-              --jq '[.[] | select(.draft and .author.login == "github-actions[bot]")][0] // empty')
+              --jq '[.[] | select(.draft and .author.login == "github-actions[bot]" and (.tag_name | startswith("notes-placeholder-")))][0] // empty')
             if [ -n "$DRAFT" ]; then
               jq -r '.body // ""' <<<"$DRAFT" > "$RUNNER_TEMP/notes.md"
               gh release create "$TAG" --draft --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
