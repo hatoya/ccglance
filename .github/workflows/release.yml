@@ -95,8 +95,8 @@ jobs:
 
       # Immutable releases forbid adding assets after publishing (and a
       # published tag can never be reused), so create a draft, attach the
-      # assets, then publish. Release notes are taken from the
-      # release-drafter draft when one exists.
+      # assets, then publish. Release notes are auto-generated from merged
+      # PRs, categorized by label via .github/release.yml.
       - name: Create release with assets and publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,17 +118,7 @@ jobs:
             exit 1
           fi
           if [ "$STATE" = "missing" ]; then
-            # Only the release-drafter bot's notes draft (placeholder tag) —
-            # never a hand-made WIP draft or a leftover draft from a failed run.
-            DRAFT=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
-              --jq '[.[] | select(.draft and .author.login == "github-actions[bot]" and (.tag_name | startswith("notes-placeholder-")))][0] // empty')
-            if [ -n "$DRAFT" ]; then
-              jq -r '.body // ""' <<<"$DRAFT" > "$RUNNER_TEMP/notes.md"
-              gh release create "$TAG" --draft --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$(jq -r '.id' <<<"$DRAFT")"
-            else
-              gh release create "$TAG" --draft --title "$TAG" --generate-notes
-            fi
+            gh release create "$TAG" --draft --title "$TAG" --generate-notes
           fi
           gh release upload "$TAG" build/ccglance.zip build/ccglance.zip.sha256 --clobber
           gh release edit "$TAG" --draft=false --latest

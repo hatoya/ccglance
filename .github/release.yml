@@ -1,0 +1,14 @@
+# Categories for GitHub's auto-generated release notes (--generate-notes),
+# grouped by the labels applied to merged PRs. Replaces release-drafter:
+# a standing notes draft was too easy to publish by hand, which freezes an
+# immutable asset-less release (the v1.5.x incidents).
+changelog:
+  categories:
+    - title: 🚀 Features
+      labels: [feature]
+    - title: 🐛 Bug Fixes
+      labels: [bug]
+    - title: 🧰 Maintenance
+      labels: [chore]
+    - title: Other Changes
+      labels: ["*"]
