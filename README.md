@@ -10,7 +10,7 @@ A macOS app that shows Claude Code activity in an **always-on-top floating panel
 
 It uses the same hooks mechanism as [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar), but shows multiple sessions at once.
 
-![ccglance demo](docs/demo.gif)
+<img src="docs/demo.gif" alt="ccglance demo" width="523" />
 
 <a href="https://github.com/hatoya/ccglance/releases/latest/download/ccglance.zip"><img src="docs/download.png" alt="Download ccglance.zip for macOS" width="360"></a>
 
