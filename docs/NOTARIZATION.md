@@ -4,6 +4,8 @@ ccglanceのリリースCI（`.github/workflows/release.yml`）は、以下のGit
 
 有効化すると、ユーザーはダウンロードした`ccglance.app`を右クリック→「開く」の回避手順なしでそのまま起動できるようになる。
 
+> **注意: 一度Developer ID署名でリリースした後は、ad-hoc署名に戻さないこと。** アプリ内アップデーター（`UpdateChecker.signatureRequirement`）は更新バンドルにTeam ID `JN89ZQ9858` のDeveloper ID署名を要求するため、Secretsが失われた状態（ad-hocフォールバック）でリリースすると、配布済みの全アプリで自動更新が署名検証エラーになる。証明書を更新した場合も同じTeam IDであれば問題ない。
+
 ## 必要なもの
 
 | 項目 | 用途 |
