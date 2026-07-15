@@ -110,7 +110,7 @@ If you prefer not to use the in-app updater (or it can't run, e.g. the release h
 Release procedure (for maintainers):
 
 1. Bump `VERSION` in `build.sh` and add the version's entry to `CHANGELOG.md` — list only what changed since the previous release
-2. Push a `v<VERSION>` tag (`git tag v<VERSION> && git push origin v<VERSION>`). The [release workflow](.github/workflows/release.yml) builds the app on a macOS runner, creates a draft release (reusing the release-drafter draft's notes when one exists), attaches `ccglance.zip` and `ccglance.zip.sha256`, and publishes it (both assets are required by the in-app updater; the workflow syncs the build version to the tag, so a missed bump still produces a correct zip)
+2. Push a `v<VERSION>` tag (`git tag v<VERSION> && git push origin v<VERSION>`). The [release workflow](.github/workflows/release.yml) builds the app on a macOS runner, creates a draft release with auto-generated notes (categorized by PR label via [`.github/release.yml`](.github/release.yml)), attaches `ccglance.zip` and `ccglance.zip.sha256`, and publishes it (both assets are required by the in-app updater; the workflow syncs the build version to the tag, so a missed bump still produces a correct zip)
 3. Releases are immutable: assets cannot be added after publishing and a published tag can never be reused, so never publish a release by hand before the assets are attached — a broken release must be re-cut under a new version
 4. The workflow then updates the [Homebrew tap](https://github.com/hatoya/homebrew-tap) cask to the new version (requires the `TAP_GITHUB_TOKEN` secret — see [docs/HOMEBREW.md](docs/HOMEBREW.md); skipped when unset)
 
