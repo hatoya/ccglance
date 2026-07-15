@@ -2,6 +2,11 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.5.3
+
+- Regenerate the social preview image with the new Retina demo frame and the icon wordmark as its title
+- Proper release of the accidentally hand-published v1.5.3 notes draft, which went out asset-less on the drafter's placeholder tag (now deleted); publishing releases must always go through a `v*` tag push
+
 ## v1.5.2
 
 - Re-release of v1.5.1: pushing the tag auto-published release-drafter's draft (which named the same tag) before the workflow could attach assets, leaving an immutable asset-less release
