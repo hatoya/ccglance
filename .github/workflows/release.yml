@@ -1,16 +1,18 @@
-# Builds ccglance.app on a macOS runner when a release is published and
-# attaches ccglance.zip + ccglance.zip.sha256 to that release.
+# Builds ccglance.app on a macOS runner when a v* tag is pushed and publishes
+# the GitHub release with ccglance.zip + ccglance.zip.sha256 attached.
 # Both assets are required by the in-app auto-updater (UpdateChecker).
+# Releases are immutable — assets cannot be added after publishing — so the
+# workflow creates a draft, attaches the assets, then publishes it.
 # Can also be run manually (workflow_dispatch) against an existing tag.
 name: Release assets
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build and upload assets for (e.g. v1.1.1)"
+        description: "Existing tag to build and release (e.g. v1.1.1)"
         required: true
 
 permissions:
@@ -23,7 +25,7 @@ jobs:
     # be held for extended review.
     timeout-minutes: 60
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ inputs.tag || github.ref_name }}
       # The `secrets` context is not allowed in step `if:` conditions, so
       # collapse the presence checks into env flags here (env is allowed).
       HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
@@ -32,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       # The tag is the source of truth: sync build.sh's VERSION to it so the
       # app's Info.plist always matches the release even if the bump was missed.
@@ -91,14 +93,44 @@ jobs:
           NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: bash build.sh
 
-      - name: Upload zip and checksum to the release
+      # Immutable releases forbid adding assets after publishing (and a
+      # published tag can never be reused), so create a draft, attach the
+      # assets, then publish. Release notes are taken from the
+      # release-drafter draft when one exists.
+      - name: Create release with assets and publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "$TAG" \
-            build/ccglance.zip \
-            build/ccglance.zip.sha256 \
-            --clobber
+          set +e
+          VIEW=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)
+          RC=$?
+          set -e
+          if [ $RC -eq 0 ]; then
+            STATE="$VIEW"
+          elif grep -qi "release not found" <<<"$VIEW"; then
+            STATE=missing
+          else
+            echo "$VIEW" >&2
+            exit 1
+          fi
+          if [ "$STATE" = "false" ]; then
+            echo "::error::Release $TAG is already published and immutable — cut a new tag instead."
+            exit 1
+          fi
+          if [ "$STATE" = "missing" ]; then
+            # Only the release-drafter bot's draft — never a hand-made WIP draft.
+            DRAFT=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+              --jq '[.[] | select(.draft and .author.login == "github-actions[bot]")][0] // empty')
+            if [ -n "$DRAFT" ]; then
+              jq -r '.body // ""' <<<"$DRAFT" > "$RUNNER_TEMP/notes.md"
+              gh release create "$TAG" --draft --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$(jq -r '.id' <<<"$DRAFT")"
+            else
+              gh release create "$TAG" --draft --title "$TAG" --generate-notes
+            fi
+          fi
+          gh release upload "$TAG" build/ccglance.zip build/ccglance.zip.sha256 --clobber
+          gh release edit "$TAG" --draft=false --latest
 
       # Keeps the Homebrew tap cask (hatoya/homebrew-tap) in sync with the
       # release. Opt-in like signing: skipped until TAP_GITHUB_TOKEN — a
