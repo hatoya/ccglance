@@ -3,15 +3,29 @@ import CryptoKit
 
 /// Checks GitHub Releases for a newer version and installs it in place:
 /// download the release zip → verify its SHA-256 against the published
-/// .sha256 asset → unpack → verify the code signature → swap the .app
-/// bundle → relaunch. Auto-install refuses to run without the checksum
-/// asset or from non-GitHub hosts (interactive installs fall back to
-/// opening the release page; automatic ones leave the banner for a click).
-/// Works with ad-hoc signing because zips downloaded by the app itself
-/// carry no quarantine attribute (we don't opt into LSFileQuarantineEnabled).
+/// .sha256 asset → unpack → verify the code signature is a Developer ID
+/// signature from `teamID` → swap the .app bundle → relaunch. Auto-install
+/// refuses to run without the checksum asset or from non-GitHub hosts
+/// (interactive installs fall back to opening the release page; automatic
+/// ones leave the banner for a click). Downloaded zips carry no quarantine
+/// attribute (we don't opt into LSFileQuarantineEnabled).
 final class UpdateChecker {
     /// GitHub repo to check. Change when the repo is published.
     static let repo = "hatoya/ccglance"
+
+    /// Apple Developer Team ID releases are signed with. Updates signed by
+    /// anyone else (including ad-hoc CI fallback builds) are refused, so a
+    /// compromised GitHub account alone can't push code to existing users.
+    static let teamID = "JN89ZQ9858"
+
+    /// codesign requirement matching Apple's standard Developer ID designated
+    /// requirement: issued by the Developer ID CA (intermediate ...6.2.6) as a
+    /// Developer ID Application certificate (leaf ...6.1.13) for our team.
+    static let signatureRequirement =
+        "anchor apple generic"
+        + " and certificate 1[field.1.2.840.113635.100.6.2.6]"
+        + " and certificate leaf[field.1.2.840.113635.100.6.1.13]"
+        + " and certificate leaf[subject.OU] = \"\(teamID)\""
 
     struct Release {
         let version: String   // normalized, no leading "v"
@@ -221,8 +235,13 @@ final class UpdateChecker {
             return
         }
 
-        // 2b. The bundle must at least carry a valid (unbroken) code signature.
-        guard run("/usr/bin/codesign", ["--verify", "--deep", newApp.path]) else {
+        // 2b. The bundle must carry an unbroken Developer ID signature from
+        //     our team — a hash match against a compromised release is not
+        //     enough to get code installed.
+        guard run("/usr/bin/codesign", [
+            "--verify", "--deep", "--strict",
+            "-R=\(Self.signatureRequirement)", newApp.path,
+        ]) else {
             fail("Update package failed signature check", fallback: release)
             return
         }
