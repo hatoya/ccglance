@@ -1,7 +1,9 @@
 # Maintains a draft release whose notes are built from merged PR titles,
 # categorized by label (.github/release-drafter.yml). The autolabeler labels
-# PRs from their branch names. Publishing the draft triggers release.yml,
-# which builds and attaches the app assets.
+# PRs from their branch names. Pushing a v* tag triggers release.yml, which
+# publishes the release with this draft's notes and deletes the draft
+# (do not publish the draft by hand — an immutable release cannot get
+# assets after publishing).
 name: Drafter
 
 on:

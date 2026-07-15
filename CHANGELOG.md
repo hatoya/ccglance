@@ -2,6 +2,18 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.5.1
+
+- Re-release of v1.5.0, which was published without its zip/sha256 assets (GitHub immutable releases reject asset uploads after publishing, which broke the publish-triggered release workflow)
+- Release workflow now runs on tag push and publishes via draft → attach assets → publish, compatible with immutable releases
+
+## v1.5.0
+
+Published without release assets — superseded by v1.5.1.
+
+- Auto-updater now pins the update's code signature to the Developer ID Team ID, and a SECURITY.md was added
+- CHANGELOG catch-up, README badges, and a social preview image
+
 ## v1.4.0
 
 - Homebrew support: `brew install --cask hatoya/tap/ccglance` — the tap cask is updated automatically on every release
