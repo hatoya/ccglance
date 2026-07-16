@@ -663,6 +663,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         root.wantsLayer = true
         root.layer?.cornerRadius = 12
         root.layer?.masksToBounds = true
+        // Hairline border so the panel edge reads against dark backgrounds
+        root.layer?.borderWidth = 1
+        root.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
         panel.contentView = root
         // Fix appearance so text is always solid white on the dark glass —
         // in light mode labelColor would otherwise be near-black and sink into
@@ -906,6 +909,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSRect(x: topLeft.x, y: topLeft.y - contentHeight, width: frame.width, height: contentHeight),
                 display: true
             )
+            // Transparent windows don't recompute their shadow on content
+            // changes; without this the drop shadow goes stale or vanishes
+            panel.invalidateShadow()
         }
     }
 
