@@ -2,6 +2,13 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.6.0
+
+- Panel now draws a hairline border and a reliable drop shadow
+- Edge resize cursors now show up over the panel borders, and the actual resize zones match the cursor zones
+- Fixed the stale Release build badge in the README
+- Re-recorded the README demo GIF (smaller file) and added a record-demo-gif skill to regenerate it
+
 ## v1.5.4
 
 - Replace release-drafter with GitHub's auto-generated release notes (categorized by PR label via `.github/release.yml`), removing the standing notes draft that could be hand-published into a broken immutable release
