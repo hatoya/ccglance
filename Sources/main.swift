@@ -529,14 +529,32 @@ final class StatusPanel: NSPanel {
 
 // MARK: - Root view — shows ⇔ cursor over the resizable left/right edges
 
+// The window server silently ignores NSCursor.set() from apps that are not
+// frontmost, and this app is never frontmost (the panel is non-activating by
+// design), so the tracking-area cursor logic below has no visible effect
+// without this. The private-but-longstanding "SetsCursorInBackground"
+// connection property tells the window server to honor our cursor sets anyway.
+@_silgen_name("CGSMainConnectionID")
+private func CGSMainConnectionID() -> UInt32
+
+@_silgen_name("CGSSetConnectionProperty")
+@discardableResult
+private func CGSSetConnectionProperty(
+    _ cid: UInt32, _ targetCID: UInt32, _ key: CFString, _ value: CFTypeRef
+) -> Int32
+
+private func enableCursorSettingInBackground() {
+    let cid = CGSMainConnectionID()
+    CGSSetConnectionProperty(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
+}
+
 final class RootView: NSView {
     static let edgeWidth: CGFloat = 8
 
-    // The panel never becomes key (it must not steal focus), but macOS only
-    // honors cursor rects / one-shot NSCursor.set() for the key window and
-    // resets the cursor right back. So: track the mouse with .activeAlways +
-    // .cursorUpdate, and re-assert the cursor on every event while hovering
-    // an edge — continuous re-set wins over the system reset.
+    // The panel never becomes key (it must not steal focus), so cursor rects
+    // are never honored. Instead: track the mouse with .activeAlways +
+    // .cursorUpdate and set the cursor manually on every event — which only
+    // takes effect thanks to enableCursorSettingInBackground() above.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for ta in trackingAreas { removeTrackingArea(ta) }
@@ -651,6 +669,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.delegate = self
+        enableCursorSettingInBackground()
 
         // Frosted-glass background as a SIBLING underneath the content, not as the
         // content's parent: subviews of NSVisualEffectView get macOS "vibrancy"
