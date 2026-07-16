@@ -98,11 +98,14 @@ docs/                    # README用アセット（demo.gif、ダウンロード
 
 ### リリース手順
 
-1. `build.sh` の `VERSION` をバンプし、`CHANGELOG.md` にそのバージョンのエントリを追加（前リリースからの変更点のみ記載）してmainに取り込む
-2. `v<VERSION>` タグをpushする（`git tag v<VERSION> && git push origin v<VERSION>`）。GitHub Releaseを手動で公開してはいけない（リリースはimmutableのため、公開後に成果物を添付できない）
-3. タグpushで `release.yml` がmacOSランナーでビルドし、ドラフトリリース作成（ノートはマージ済みPRから自動生成。カテゴリ分けは `.github/release.yml` のラベル設定）→ `ccglance.zip` と `ccglance.zip.sha256` を添付 → 公開まで自動で行う（両方ともアプリ内アップデーターに必須。zip名は `releases/latest/download/ccglance.zip` の固定リンクを維持するため無バージョン）。immutableのため公開済みタグは再利用不可。リリースをやり直す場合は新バージョンのタグを切る
-4. 署名用のGitHub Secretsが設定済みの場合、CIが自動でDeveloper ID署名 + notarize + stapleを行う。未設定ならad-hoc署名にフォールバックする（セットアップ手順は `docs/NOTARIZATION.md`）
-5. `TAP_GITHUB_TOKEN` が設定済みの場合、CIがHomebrew tap（`hatoya/homebrew-tap` の `Casks/ccglance.rb`）のversion/sha256を自動更新する。未設定ならスキップされる（セットアップ手順は `docs/HOMEBREW.md`）
+リリース作業は `release` スキル（`.claude/skills/release/SKILL.md`）に従う。バージョン判断 → CHANGELOG → ビルド → レビュー → バンプPR → マージ待ち → タグpush → リリース検証までの一連の流れを定義している。
+
+普遍的な原則:
+
+- リリースの起点は `v<VERSION>` タグのpushのみ。GitHub Releaseを手動で公開してはいけない（リリースはimmutableのため、公開後に成果物を添付できない。公開済みタグは再利用不可で、やり直す場合は新バージョンのタグを切る）
+- タグpushで `release.yml` がビルド → ドラフトリリース作成（ノートはマージ済みPRから自動生成。カテゴリ分けは `.github/release.yml` のラベル設定）→ `ccglance.zip` と `ccglance.zip.sha256` を添付 → 公開まで自動で行う（両方ともアプリ内アップデーターに必須。zip名は `releases/latest/download/ccglance.zip` の固定リンクを維持するため無バージョン）
+- 署名用のGitHub Secretsが設定済みの場合、CIが自動でDeveloper ID署名 + notarize + stapleを行う。未設定ならad-hoc署名にフォールバックする（セットアップ手順は `docs/NOTARIZATION.md`）
+- `TAP_GITHUB_TOKEN` が設定済みの場合、CIがHomebrew tap（`hatoya/homebrew-tap` の `Casks/ccglance.rb`）のversion/sha256を自動更新する。未設定ならスキップされる（セットアップ手順は `docs/HOMEBREW.md`）
 
 ## 技術スタック
 
