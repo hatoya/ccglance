@@ -591,6 +591,59 @@ final class RootView: NSView {
     }
 }
 
+// Transparent strips over the left/right edges that implement the width
+// resize themselves. The system resize band of a borderless .resizable
+// window is narrower than the 8px zone the ⇔ cursor advertises, so
+// .resizable is off and the drag is handled here — the cursor zone and the
+// draggable zone are the same strips by construction.
+final class ResizeHandleView: NSView {
+    enum Edge { case left, right }
+    private let edge: Edge
+    private let minWidth: CGFloat
+    private let maxWidth: CGFloat
+    private var startFrame = NSRect.zero
+    private var startMouseX: CGFloat = 0
+
+    init(edge: Edge, minWidth: CGFloat, maxWidth: CGFloat) {
+        self.edge = edge
+        self.minWidth = minWidth
+        self.maxWidth = maxWidth
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    // Opt out of move-by-window-background so the drag resizes instead of moves
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    // NSEvent.mouseLocation is already in global screen coordinates —
+    // converting event.locationInWindow would go stale mid-drag because our
+    // own setFrame moves the window between events on left-edge drags.
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        startFrame = window.frame
+        startMouseX = NSEvent.mouseLocation.x
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window else { return }
+        let dx = NSEvent.mouseLocation.x - startMouseX
+        // Start from the current frame: the content-height tick may adjust
+        // y/height mid-drag, and only x/width belong to this drag.
+        var f = window.frame
+        switch edge {
+        case .right:
+            f.size.width = max(minWidth, min(maxWidth, startFrame.width + dx))
+            f.origin.x = startFrame.origin.x
+        case .left:
+            f.size.width = max(minWidth, min(maxWidth, startFrame.width - dx))
+            f.origin.x = startFrame.maxX - f.width
+        }
+        NSCursor.resizeLeftRight.set()  // mouseMoved pauses during drags
+        window.setFrame(f, display: true)
+    }
+}
+
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -657,7 +710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let width = savedWidth >= minWidth ? min(savedWidth, maxWidth) : defaultWidth
         panel = StatusPanel(
             contentRect: NSRect(x: 0, y: 0, width: width, height: 100),
-            styleMask: [.borderless, .nonactivatingPanel, .resizable],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false
         )
         panel.level = .statusBar
@@ -773,6 +826,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "")
         for item in menu.items { item.target = self }
         effect.menu = menu
+
+        // Edge resize handles — added last so they sit above the content
+        for edge in [ResizeHandleView.Edge.left, .right] {
+            let handle = ResizeHandleView(edge: edge, minWidth: minWidth, maxWidth: maxWidth)
+            handle.menu = menu  // keep the right-click menu working over the edges
+            handle.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(handle)
+            NSLayoutConstraint.activate([
+                handle.topAnchor.constraint(equalTo: root.topAnchor),
+                handle.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+                handle.widthAnchor.constraint(equalToConstant: RootView.edgeWidth),
+                edge == .left
+                    ? handle.leadingAnchor.constraint(equalTo: root.leadingAnchor)
+                    : handle.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            ])
+        }
 
         restoreOrigin()
         panel.orderFrontRegardless()
@@ -915,11 +984,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !updateBanner.isHidden {
             contentHeight += 24  // room for the update banner at the bottom
         }
-        // Lock vertical resizing: edges only move horizontally
-        panel.minSize = NSSize(width: minWidth, height: contentHeight)
-        panel.maxSize = NSSize(width: maxWidth, height: contentHeight)
         let frame = panel.frame
-        if abs(frame.height - contentHeight) > 0.5, !panel.inLiveResize {
+        if abs(frame.height - contentHeight) > 0.5 {
             let topLeft = NSPoint(x: frame.origin.x, y: frame.origin.y + frame.height)
             panel.setFrame(
                 NSRect(x: topLeft.x, y: topLeft.y - contentHeight, width: frame.width, height: contentHeight),
