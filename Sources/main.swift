@@ -19,6 +19,13 @@ struct PRInfo: Codable {
     var checkedAt: Double?
 }
 
+struct HostInfo: Codable {
+    var bundleId: String?        // __CFBundleIdentifier of the GUI ancestor
+    var termProgram: String?     // TERM_PROGRAM ("Apple_Terminal" | "iTerm.app" | "vscode" | "tmux" | …)
+    var itermSessionId: String?  // ITERM_SESSION_ID ("w0t2p0:<UUID>")
+    var tty: String?             // "/dev/ttysNNN" (captured for Terminal.app only)
+}
+
 struct SessionState: Codable {
     var sessionId: String
     var project: String?
@@ -32,6 +39,7 @@ struct SessionState: Codable {
     var updatedAt: Double
     var agents: [AgentTask]?  // running subagents (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
+    var host: HostInfo?       // jump-to-session target (optional: older files lack it)
 }
 
 enum StateStore {
@@ -289,6 +297,156 @@ enum Theme {
     }
 }
 
+// MARK: - Jump to session host
+//
+// The hook records which GUI app hosts each session (bundle id, tty, iTerm
+// session id). The row's hover button resolves that into the most precise jump
+// available: exact Terminal.app/iTerm2 tab via AppleScript, the cwd's window
+// for VS Code-family editors, or plain app activation for everything else.
+
+enum JumpTarget {
+    case terminalTab(tty: String)                        // Terminal.app: select tab by tty
+    case itermSession(uuid: String)                      // iTerm2: select session by id
+    case editorWorkspace(bundleId: String, cwd: String)  // VS Code family: refocus the cwd window
+    case app(bundleId: String)                           // any other GUI host
+
+    init?(session: SessionState) {
+        guard let host = session.host else { return nil }
+        // Under tmux the recorded tty belongs to the tmux pane, not a terminal
+        // tab, so tab matching can never work — activate the app at best.
+        if host.termProgram == "tmux" {
+            guard let b = host.bundleId else { return nil }
+            self = .app(bundleId: b)
+            return
+        }
+        if host.bundleId == "com.apple.Terminal", let tty = host.tty {
+            self = .terminalTab(tty: tty)
+            return
+        }
+        if host.bundleId == "com.googlecode.iterm2", let raw = host.itermSessionId {
+            // ITERM_SESSION_ID is "w0t2p0:<UUID>"; AppleScript's session id is the UUID
+            let uuid = raw.split(separator: ":").last.map(String.init) ?? raw
+            self = .itermSession(uuid: uuid)
+            return
+        }
+        if host.termProgram == "vscode", let b = host.bundleId, let cwd = session.cwd {
+            self = .editorWorkspace(bundleId: b, cwd: cwd)
+            return
+        }
+        guard let b = host.bundleId else { return nil }  // ssh / CLI-launched: no target
+        self = .app(bundleId: b)
+    }
+}
+
+enum HostJumper {
+    /// Serial so repeated clicks while the first-run automation consent dialog
+    /// blocks an osascript child queue up instead of parking extra threads.
+    private static let queue = DispatchQueue(label: "ccglance.jump", qos: .userInitiated)
+
+    /// AppleScript can take 100ms+ (and the first-run automation consent
+    /// dialog blocks the osascript child until answered) — never on main.
+    static func jump(to target: JumpTarget) {
+        queue.async {
+            switch target {
+            case .terminalTab(let tty):
+                jumpScript(bundleId: "com.apple.Terminal", value: tty, script: """
+                tell application "Terminal"
+                    repeat with w in windows
+                        repeat with t in tabs of w
+                            if tty of t is "\(tty)" then
+                                set selected tab of w to t
+                                set index of w to 1
+                            end if
+                        end repeat
+                    end repeat
+                end tell
+                """)
+            case .itermSession(let uuid):
+                jumpScript(bundleId: "com.googlecode.iterm2", value: uuid, script: """
+                tell application "iTerm2"
+                    repeat with w in windows
+                        repeat with t in tabs of w
+                            repeat with s in sessions of t
+                                if id of s is "\(uuid)" then
+                                    select s
+                                    select t
+                                    select w
+                                end if
+                            end repeat
+                        end repeat
+                    end repeat
+                end tell
+                """)
+            case .editorWorkspace(let bundleId, let cwd):
+                openWorkspace(bundleId: bundleId, cwd: cwd)
+            case .app(let bundleId):
+                activate(bundleId: bundleId)
+            }
+        }
+    }
+
+    /// Runs the tab-selection script, then activates the app regardless of the
+    /// outcome — a closed tab or a denied automation prompt still front the app.
+    /// Never launches an app that has quit since the session started.
+    private static func jumpScript(bundleId: String, value: String, script: String) {
+        guard isRunning(bundleId) else { return }
+        // Values come from our own hook, but they are interpolated into
+        // AppleScript source — allowlist them so a corrupted state file
+        // cannot inject script.
+        if value.range(of: "^[A-Za-z0-9/_.:-]+$", options: .regularExpression) != nil {
+            runOSAScript(script)
+        }
+        activate(bundleId: bundleId)
+    }
+
+    private static func openWorkspace(bundleId: String, cwd: String) {
+        guard isRunning(bundleId) else { return }  // never launch an app that has quit
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
+            activate(bundleId: bundleId)
+            return
+        }
+        // Same semantics as `open -a <app> <dir>`: an already-open folder
+        // window is reused and focused; otherwise the editor opens it.
+        NSWorkspace.shared.open(
+            [URL(fileURLWithPath: cwd, isDirectory: true)],
+            withApplicationAt: appURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { _, error in
+            if error != nil { activate(bundleId: bundleId) }
+        }
+    }
+
+    /// Needs no automation permission — the universal fallback.
+    private static func activate(bundleId: String) {
+        DispatchQueue.main.async {
+            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else { return }
+            if #available(macOS 14.0, *) {
+                app.activate()
+            } else {
+                app.activate(options: [.activateIgnoringOtherApps])
+            }
+        }
+    }
+
+    private static func isRunning(_ bundleId: String) -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).isEmpty
+    }
+
+    /// osascript child rather than NSAppleScript: NSAppleScript is main-thread
+    /// bound, so the first-run consent dialog would freeze the panel. TCC
+    /// attributes the child to ccglance (responsible process), so the app's
+    /// usage description and consent entry apply.
+    private static func runOSAScript(_ script: String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        p.arguments = ["-e", script]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return }
+        p.waitUntilExit()
+    }
+}
+
 enum CrabState {
     case working, permission, idle
 }
@@ -381,6 +539,9 @@ final class SessionRowView: NSView {
     let rightLabel = NSTextField(labelWithString: "")   // elapsed time if available, otherwise status name
     private let highlight = NSView()
     private let separator = NSBox()
+    private let jumpButton = NSButton()
+    private var jumpTarget: JumpTarget?
+    private var hovering = false
 
     /// Separator drawn only between rows (hidden on the last row)
     var showsSeparator: Bool = true {
@@ -442,11 +603,64 @@ final class SessionRowView: NSView {
             separator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+
+        // Hover-revealed jump button. It swaps in for the right label (same
+        // slot), so the row keeps its fixed height and no widths shift.
+        jumpButton.isBordered = false
+        jumpButton.refusesFirstResponder = true
+        if let img = NSImage(systemSymbolName: "arrow.up.forward.app", accessibilityDescription: "Jump to session") {
+            jumpButton.image = img.withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
+        }
+        jumpButton.contentTintColor = Theme.orange
+        jumpButton.toolTip = "Jump to this session's window"
+        jumpButton.target = self
+        jumpButton.action = #selector(jumpClicked)
+        jumpButton.isHidden = true
+        jumpButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(jumpButton)
+        NSLayoutConstraint.activate([
+            jumpButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            jumpButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        // .inVisibleRect keeps the area glued to the row across resizes (no
+        // updateTrackingAreas needed); .activeAlways is required because the
+        // panel is non-activating and never the key window.
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self, userInfo: nil
+        ))
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        refreshHoverUI()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        refreshHoverUI()
+    }
+
+    private func refreshHoverUI() {
+        let show = hovering && jumpTarget != nil
+        jumpButton.isHidden = !show
+        rightLabel.isHidden = show
+    }
+
+    @objc private func jumpClicked() {
+        guard let target = jumpTarget else { return }
+        HostJumper.jump(to: target)
+    }
+
     func update(_ s: SessionState, sparkIndex: Int, now: TimeInterval) {
+        // Rows are reused and re-mapped positionally each tick, so the jump
+        // target must track whichever session is currently displayed here.
+        jumpTarget = JumpTarget(session: s)
+        refreshHoverUI()
         // The project name lives in the group header; the row shows the
         // session title (editable in Claude Desktop). While the title is
         // still being generated (fresh session) show a placeholder instead

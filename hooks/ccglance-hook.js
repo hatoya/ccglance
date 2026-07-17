@@ -6,7 +6,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile, spawn } = require("child_process");
+const { execFile, execSync, spawn } = require("child_process");
 
 const SESSIONS_DIR = path.join(os.homedir(), ".claude", "ccglance", "sessions");
 
@@ -232,6 +232,30 @@ function projectFromCwd(cwd) {
   return path.basename(cwd);
 }
 
+// Host identity for the panel's jump-to-session button. Env vars are free;
+// the ps call is only needed for Terminal.app tab matching (its AppleScript
+// identifies tabs by tty), so it runs only in that case — and never under
+// tmux, where the claude process's tty is the tmux pane pty, useless for
+// matching a Terminal tab. process.ppid is the claude process holding the tty.
+function captureHost() {
+  const env = process.env;
+  const host = {
+    bundleId: env.__CFBundleIdentifier || null,
+    termProgram: env.TERM_PROGRAM || null,
+    itermSessionId: env.ITERM_SESSION_ID || null,
+    tty: null,
+  };
+  if (host.bundleId === "com.apple.Terminal" && host.termProgram !== "tmux") {
+    try {
+      const t = execSync(`ps -o tty= -p ${process.ppid}`, { timeout: 1000 })
+        .toString()
+        .trim();
+      if (t && t !== "??") host.tty = "/dev/" + t;
+    } catch {}
+  }
+  return host;
+}
+
 // Running-subagent tracking: PreToolUse on an agent tool pushes an entry,
 // PostToolUse removes the matching one. tool_use_id (present on both events in
 // newer builds) is the correlation key, with tool_input.description as the
@@ -418,6 +442,13 @@ async function main() {
     base.project = projectFromCwd(input.cwd) || base.project;
   }
   if (title) base.title = title;
+  // Captured once per session (unwritten fields persist across events), which
+  // also backfills sessions that predate this hook version. SessionStart
+  // re-captures so a resumed session doesn't keep a stale host from a state
+  // file that survived a crash.
+  if (!base.host || input.hook_event_name === "SessionStart") {
+    base.host = captureHost();
+  }
   base.updatedAt = now;
 
   switch (input.hook_event_name) {

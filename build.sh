@@ -41,6 +41,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSAppleEventsUsageDescription</key><string>ccglance selects the Terminal or iTerm2 tab of a Claude Code session when you click its jump button.</string>
 </dict>
 </plist>
 PLIST
@@ -50,8 +51,21 @@ if [ "$CODESIGN_IDENTITY" = "-" ]; then
     codesign --force --sign - "$APP"
 else
     # Hardened runtime + secure timestamp are required for notarization.
+    # The automation entitlement lets the hardened-runtime build send Apple
+    # events (Terminal/iTerm2 tab selection for the jump button).
     echo "Signing ($CODESIGN_IDENTITY)…"
-    codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
+    cat > "$BUILD_DIR/entitlements.plist" <<'ENT'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.automation.apple-events</key><true/>
+</dict>
+</plist>
+ENT
+    codesign --force --options runtime --timestamp \
+        --entitlements "$BUILD_DIR/entitlements.plist" \
+        --sign "$CODESIGN_IDENTITY" "$APP"
 fi
 
 # Release assets: the app checks the zip's SHA-256 against the .sha256 asset
