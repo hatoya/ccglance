@@ -2,6 +2,12 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.7.0
+
+- Session renames made in Claude Desktop are now detected via an FSEvents watch on the Desktop store, so the panel picks up new titles without waiting for the next hook event
+- Equalized horizontal padding in the social preview image
+- Added a release skill codifying the end-to-end release flow
+
 ## v1.6.0
 
 - Panel now draws a hairline border and a reliable drop shadow
