@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import CoreText
 
 // MARK: - Session state model (written by hooks/ccglance-hook.js)
@@ -78,27 +79,36 @@ enum StateStore {
     /// a set of CLI session ids in a single store walk. Store layout:
     ///   ~/Library/Application Support/Claude/claude-code-sessions/<ws>/<x>/local_<id>.json
     ///   { "title": ..., "cliSessionId": ..., "bridgeSessionIds": [...] }
+    static var desktopStoreDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)
+    }
+
+    /// Parse one Desktop store file into the session ids it maps and its title.
+    private static func parseStoreFile(_ url: URL) -> (ids: [String], title: String)? {
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = obj["title"] as? String else { return nil }
+        let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
+        var ids: [String] = []
+        for key in ["cliSessionId", "sessionId", "id"] {
+            if let v = obj[key] as? String { ids.append(v) }
+        }
+        if let bridged = obj["bridgeSessionIds"] as? [String] { ids += bridged }
+        return ids.isEmpty ? nil : (ids, title)
+    }
+
     static func desktopTitles(for sessionIds: Set<String>) -> [String: String] {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
         guard let enumerator = FileManager.default.enumerator(
-            at: root,
+            at: desktopStoreDir,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else { return [:] }
 
         var best: [String: (title: String, mtime: Date)] = [:]
         for case let url as URL in enumerator where url.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: url),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            var ids: [String] = []
-            for key in ["cliSessionId", "sessionId", "id"] {
-                if let v = obj[key] as? String { ids.append(v) }
-            }
-            if let bridged = obj["bridgeSessionIds"] as? [String] { ids += bridged }
-            guard let raw = obj["title"] as? String else { continue }
-            let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !title.isEmpty else { continue }
+            guard let (ids, title) = parseStoreFile(url) else { continue }
             let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                 .contentModificationDate ?? .distantPast
             for id in ids where sessionIds.contains(id) {
@@ -116,14 +126,36 @@ enum StateStore {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else { return }
         // State files are named <session_id>.json, so ids resolve without decoding
-        let jsonFiles = files.filter { $0.pathExtension == "json" }
-        var targets = Set(jsonFiles.map { $0.deletingPathExtension().lastPathComponent })
+        var targets = Set(files.filter { $0.pathExtension == "json" }
+            .map { $0.deletingPathExtension().lastPathComponent })
         if let only { targets.formIntersection(only) }
         guard !targets.isEmpty else { return }
-        let titles = desktopTitles(for: targets)
-        for url in jsonFiles {
+        persist(titles: desktopTitles(for: targets))
+    }
+
+    /// Re-resolve titles for the sessions referenced by specific store files
+    /// (FSEvents-changed paths). Delegates to refreshTitles so the store-wide
+    /// mtime-newest rule decides, exactly like the hook does — a touched stale
+    /// file must not win over a fresher one just because it was touched.
+    /// refreshTitles intersects with tracked sessions and returns early when
+    /// none match, so changes to untracked sessions cost only the parse here.
+    static func applyTitles(fromStoreFiles urls: [URL]) {
+        var ids = Set<String>()
+        for url in urls {
+            guard let (fileIds, _) = parseStoreFile(url) else { continue }
+            ids.formUnion(fileIds)
+        }
+        guard !ids.isEmpty else { return }
+        refreshTitles(only: ids)
+    }
+
+    private static func persist(titles: [String: String]) {
+        guard !titles.isEmpty else { return }
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else { return }
+        for url in files where url.pathExtension == "json" {
             guard let title = titles[url.deletingPathExtension().lastPathComponent] else { continue }
-            // Read right before writing: the store walk above takes a while and
+            // Read right before writing: resolving titles takes a while and
             // hooks may have rewritten (or removed) the file meanwhile — merge
             // only the title into the freshest state to keep the race window tiny
             guard let data = try? Data(contentsOf: url),
@@ -145,6 +177,82 @@ enum StateStore {
                state.status == "idle" {
                 try? fm.removeItem(at: url)
             }
+        }
+    }
+}
+
+// MARK: - Desktop store watcher
+
+/// Watches the Claude Desktop session store with FSEvents so renames made in
+/// the Desktop app land on the panel immediately, without waiting for the next
+/// hook turn boundary. Event-driven: zero cost while nothing changes. The
+/// untitled-session poll in AppDelegate stays as a fallback for dropped events.
+final class TitleStoreWatcher {
+    private var stream: FSEventStreamRef?
+    private let queue = DispatchQueue(label: "ccglance.title-watcher", qos: .utility)
+
+    func start() {
+        guard stream == nil else { return }
+        // The context retains self so an in-flight callback can never race a
+        // deallocation; the stream holds the watcher alive until stop()
+        var context = FSEventStreamContext(
+            version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: { info in
+                guard let info else { return nil }
+                _ = Unmanaged<TitleStoreWatcher>.fromOpaque(info).retain()
+                return info
+            },
+            release: { info in
+                guard let info else { return }
+                Unmanaged<TitleStoreWatcher>.fromOpaque(info).release()
+            },
+            copyDescription: nil
+        )
+        let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
+            guard let info else { return }
+            let watcher = Unmanaged<TitleStoreWatcher>.fromOpaque(info).takeUnretainedValue()
+            var mustRescan = false
+            for i in 0..<count where flags[i] & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0 {
+                mustRescan = true
+            }
+            // paths is a CFArray of CFString (kFSEventStreamCreateFlagUseCFTypes)
+            let all = unsafeBitCast(paths, to: NSArray.self) as? [String] ?? []
+            watcher.handle(paths: all, mustRescan: mustRescan)
+        }
+        // 0.5s latency coalesces edit bursts into one callback
+        guard let s = FSEventStreamCreate(
+            nil, callback, &context,
+            [StateStore.desktopStoreDir.path] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.5,
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents)
+        ) else { return }
+        FSEventStreamSetDispatchQueue(s, queue)
+        guard FSEventStreamStart(s) else {
+            FSEventStreamInvalidate(s)
+            FSEventStreamRelease(s)
+            return
+        }
+        stream = s
+    }
+
+    func stop() {
+        guard let s = stream else { return }
+        FSEventStreamStop(s)
+        FSEventStreamInvalidate(s)
+        FSEventStreamRelease(s)
+        stream = nil
+    }
+
+    private func handle(paths: [String], mustRescan: Bool) {
+        if mustRescan {
+            // Kernel dropped events — fall back to the full store walk
+            StateStore.refreshTitles()
+            return
+        }
+        let changed = paths.filter { $0.hasSuffix(".json") }.map { URL(fileURLWithPath: $0) }
+        if !changed.isEmpty {
+            StateStore.applyTitles(fromStoreFiles: changed)
         }
     }
 }
@@ -664,6 +772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var crabFrame = 0
     private var sessions: [SessionState] = []
     private var isRefreshingUntitled = false
+    private let titleWatcher = TitleStoreWatcher()
 
     private let defaultWidth: CGFloat = 300
     private let minWidth: CGFloat = 220
@@ -695,6 +804,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.showUpdatePhase(phase)
         }
         updateChecker.start()
+
+        // Pick up session renames made in Claude Desktop as they happen
+        titleWatcher.start()
 
         // 0.1s: crab animation; sessions reloaded every 0.5s
         animTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
