@@ -2,6 +2,12 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.8.0
+
+- Hovering a session row now shows a jump button that focuses the session's host app (Claude Desktop via `claude://resume` without a reload, Terminal.app/iTerm2 via AppleScript down to the exact tab, VS Code-family and other GUI hosts via window activation)
+- Sessions waiting for input now show a hand icon instead of the yellow dot (falls back to the dot if the bundled Font Awesome font is unavailable)
+- PR status now reflects within seconds after `gh pr` / GitHub MCP operations via an immediate post-tool fetch, and idle rows with an open PR refresh every 15 seconds (backing off to 60 seconds after 30 minutes of inactivity)
+
 ## v1.7.0
 
 - Session renames made in Claude Desktop are now detected via an FSEvents watch on the Desktop store, so the panel picks up new titles without waiting for the next hook event
