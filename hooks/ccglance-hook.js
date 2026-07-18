@@ -351,6 +351,20 @@ function spawnPrFetch(sessionId, cwd) {
   } catch {}
 }
 
+// PostToolUse: tools that can change the branch's PR state warrant an
+// immediate re-fetch instead of waiting for the Stop-time one.
+const PR_MUTATING_MCP = new Set([
+  "mcp__github__create_pull_request",
+  "mcp__github__merge_pull_request",
+]);
+
+function isPrMutatingTool(input) {
+  if (PR_MUTATING_MCP.has(input.tool_name)) return true;
+  if (input.tool_name !== "Bash") return false;
+  const cmd = (input.tool_input || {}).command;
+  return typeof cmd === "string" && /\bgh\s+pr\s+(create|merge|close|reopen|ready)\b/.test(cmd);
+}
+
 async function main() {
   if (process.argv[2] === "--fetch-pr") {
     const sessionId = process.argv[3];
@@ -468,6 +482,7 @@ async function main() {
         removeAgent(base, input);
       }
       saveState(base);
+      if (isPrMutatingTool(input)) spawnPrFetch(sessionId, base.cwd);
       break;
 
     case "Notification": {

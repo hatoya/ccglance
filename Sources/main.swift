@@ -779,6 +779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var crabFrame = 0
     private var sessions: [SessionState] = []
     private var isRefreshingUntitled = false
+    private var prFetchAttempts: [String: Double] = [:]   // sessionId → last --fetch-pr spawn
     private let titleWatcher = TitleStoreWatcher()
 
     private let defaultWidth: CGFloat = 300
@@ -981,9 +982,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if tickCount % 3 == 0 { sparkIndex += 1 }
 
-        // Refresh PR status every 60s so merges/closes done outside a session
-        // show up without waiting for the next turn boundary
-        if tickCount % 600 == 0 { refreshPRStatuses() }
+        // Refresh PR status every 15s so merges/closes done outside a session
+        // show up without waiting for the next turn boundary; sessions idle
+        // for a while are throttled down inside refreshPRStatuses()
+        if tickCount % 150 == 0 { refreshPRStatuses() }
 
         // Fresh sessions start without a title (Claude Desktop generates it a
         // few seconds after the first prompt, but hooks only re-resolve it on
@@ -1187,22 +1189,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Re-fetch PR status for idle sessions via the bundled hook's --fetch-pr
     /// mode. Fire-and-forget: results land in the session files and get picked
-    /// up by the regular 0.5s poll. Called every 60s from tick() and by the
+    /// up by the regular 0.5s poll. Called every 15s from tick() and by the
     /// manual Refresh action (force); hook events also refresh on
-    /// Stop/SessionStart. The periodic pass only polls sessions with a live
-    /// PR — no-PR sessions are covered by the hooks, MERGED is irreversible —
-    /// to keep the node/gh process churn minimal.
+    /// Stop/SessionStart and right after PR-mutating tools. The periodic pass
+    /// only polls sessions with a live PR — no-PR sessions are covered by the
+    /// hooks, MERGED is irreversible — at 15s while the session saw a hook
+    /// event within the last 30min (merges usually happen soon after a turn
+    /// ends) and 60s after that, to keep the node/gh process churn minimal.
     private func refreshPRStatuses(force: Bool = false) {
         guard let resources = Bundle.main.resourcePath, let nodePath = nodePath else { return }
         let hook = resources + "/ccglance-hook.js"
         guard FileManager.default.fileExists(atPath: hook) else { return }
         let now = Date().timeIntervalSince1970
+        let live = Set(sessions.map { $0.sessionId })
+        prFetchAttempts = prFetchAttempts.filter { live.contains($0.key) }
         for s in sessions where s.status == "idle" {
             guard let cwd = s.cwd else { continue }
             if !force {
                 guard let pr = s.pr, pr.state != "MERGED" else { continue }
-                if let checked = pr.checkedAt, now - checked < 55 { continue }
+                let throttle: Double = now - s.updatedAt < 1800 ? 12 : 55
+                // Throttle on the last attempt, not just checkedAt: a failing
+                // gh (offline, expired auth, rate-limited) never advances
+                // checkedAt and would otherwise spawn node+gh on every pass
+                let last = max(pr.checkedAt ?? 0, prFetchAttempts[s.sessionId] ?? 0)
+                if now - last < throttle { continue }
             }
+            prFetchAttempts[s.sessionId] = now
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: nodePath)
             proc.arguments = [hook, "--fetch-pr", s.sessionId, cwd]
