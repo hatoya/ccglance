@@ -336,6 +336,45 @@ enum JumpTarget {
         guard let b = host.bundleId else { return nil }  // ssh / CLI-launched: no target
         self = .app(bundleId: b)
     }
+
+    /// Hover-button label, e.g. "Open in Claude Desktop".
+    var buttonTitle: String {
+        "Open in " + appName
+    }
+
+    private var appName: String {
+        switch self {
+        case .terminalTab: return "Terminal"
+        case .itermSession: return "iTerm2"
+        case .editorWorkspace(let bundleId, _), .app(let bundleId):
+            return Self.appName(forBundleId: bundleId)
+        }
+    }
+
+    // Cached: rows recompute their target every 0.1s tick, and the
+    // NSWorkspace lookup for unknown bundle ids hits the disk.
+    private static var appNameCache: [String: String] = [:]
+
+    private static func appName(forBundleId bundleId: String) -> String {
+        if let cached = appNameCache[bundleId] { return cached }
+        let name: String
+        switch bundleId {
+        case "com.apple.Terminal": name = "Terminal"
+        case "com.googlecode.iterm2": name = "iTerm2"
+        case "com.microsoft.VSCode": name = "VS Code"
+        case "com.anthropic.claudefordesktop": name = "Claude Desktop"
+        default:
+            // Resolve e.g. Cursor/Ghostty from the app bundle on disk;
+            // fall back to the last bundle-id component.
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+                name = url.deletingPathExtension().lastPathComponent
+            } else {
+                name = bundleId.split(separator: ".").last.map(String.init) ?? bundleId
+            }
+        }
+        appNameCache[bundleId] = name
+        return name
+    }
 }
 
 enum HostJumper {
@@ -541,7 +580,12 @@ final class SessionRowView: NSView {
     private let separator = NSBox()
     private let jumpButton = NSButton()
     private var jumpTarget: JumpTarget?
+    private var jumpTitle = ""
     private var hovering = false
+    // Active only while the button shows: the text button is usually wider
+    // than the right label, so the title must yield to it — but only then,
+    // or the hidden button's width would squeeze titles permanently.
+    private var titleClearsButton: NSLayoutConstraint?
 
     /// Separator drawn only between rows (hidden on the last row)
     var showsSeparator: Bool = true {
@@ -604,24 +648,25 @@ final class SessionRowView: NSView {
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
 
-        // Hover-revealed jump button. It swaps in for the right label (same
-        // slot), so the row keeps its fixed height and no widths shift.
+        // Hover-revealed jump button ("Open in <app>"). It swaps in for the
+        // right label (same slot), so the row keeps its fixed height; the
+        // session title truncates first, the button text never does.
         jumpButton.isBordered = false
         jumpButton.refusesFirstResponder = true
-        if let img = NSImage(systemSymbolName: "arrow.up.forward.app", accessibilityDescription: "Jump to session") {
-            jumpButton.image = img.withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
-        }
-        jumpButton.contentTintColor = Theme.orange
         jumpButton.toolTip = "Jump to this session's window"
         jumpButton.target = self
         jumpButton.action = #selector(jumpClicked)
         jumpButton.isHidden = true
+        jumpButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        jumpButton.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(jumpButton)
         NSLayoutConstraint.activate([
             jumpButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             jumpButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        titleClearsButton = projectLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: jumpButton.leadingAnchor, constant: -8)
 
         // .inVisibleRect keeps the area glued to the row across resizes (no
         // updateTrackingAreas needed); .activeAlways is required because the
@@ -649,6 +694,7 @@ final class SessionRowView: NSView {
         let show = hovering && jumpTarget != nil
         jumpButton.isHidden = !show
         rightLabel.isHidden = show
+        titleClearsButton?.isActive = show
     }
 
     @objc private func jumpClicked() {
@@ -660,6 +706,14 @@ final class SessionRowView: NSView {
         // Rows are reused and re-mapped positionally each tick, so the jump
         // target must track whichever session is currently displayed here.
         jumpTarget = JumpTarget(session: s)
+        let title = jumpTarget?.buttonTitle ?? ""
+        if title != jumpTitle {
+            jumpTitle = title
+            jumpButton.attributedTitle = NSAttributedString(string: title, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: Theme.orange,
+            ])
+        }
         refreshHoverUI()
         // The project name lives in the group header; the row shows the
         // session title (editable in Claude Desktop). While the title is
