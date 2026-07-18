@@ -444,7 +444,14 @@ enum HostJumper {
         if sessionId.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil {
             let link: String
             if let desktopId = desktopSessionId(forCliSessionId: sessionId) {
-                link = "claude://claude.ai/claude-code-desktop/\(desktopId)"
+                if desktopId.hasPrefix("local_") {
+                    // resume?session=<uuid> short-circuits when local_<uuid>
+                    // already exists: no import, and it navigates in-app
+                    // (SPA) instead of reloading the whole window.
+                    link = "claude://resume?session=\(desktopId.dropFirst("local_".count))"
+                } else {
+                    link = "claude://claude.ai/claude-code-desktop/\(desktopId)"
+                }
             } else {
                 link = "claude://resume?session=\(sessionId)"
             }
