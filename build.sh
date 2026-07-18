@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP_NAME="ccglance"
-VERSION="1.7.0"   # for local builds; release CI syncs this from the tag (the tag is the source of truth)
+VERSION="1.8.0"   # for local builds; release CI syncs this from the tag (the tag is the source of truth)
 BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 
