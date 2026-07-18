@@ -435,15 +435,54 @@ enum HostJumper {
     static let claudeDesktopBundleId = "com.anthropic.claudefordesktop"
 
     /// Claude Desktop keeps every session inside one window, so activation
-    /// alone is a no-op when the app is already frontmost. Its claude://resume
-    /// deep link navigates to (importing if needed) the exact CLI session.
+    /// alone is a no-op when the app is already frontmost. Navigate to the
+    /// existing desktop session; claude://resume is only a fallback because
+    /// it imports a fresh untitled copy ("General coding session") instead
+    /// of focusing the session the user is already running.
     private static func openClaudeSession(sessionId: String) {
         guard isRunning(claudeDesktopBundleId) else { return }
-        if sessionId.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
-           let url = URL(string: "claude://resume?session=\(sessionId)") {
-            NSWorkspace.shared.open(url)
+        if sessionId.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil {
+            let link: String
+            if let desktopId = desktopSessionId(forCliSessionId: sessionId) {
+                link = "claude://claude.ai/claude-code-desktop/\(desktopId)"
+            } else {
+                link = "claude://resume?session=\(sessionId)"
+            }
+            if let url = URL(string: link) {
+                NSWorkspace.shared.open(url)
+            }
         }
         activate(bundleId: claudeDesktopBundleId)
+    }
+
+    /// Claude Desktop persists one JSON record per session under Application
+    /// Support; each stores the CLI session id it wraps. Runs on the jump
+    /// queue, only on click.
+    private static func desktopSessionId(forCliSessionId cliId: String) -> String? {
+        let root = ("~/Library/Application Support/Claude/claude-code-sessions" as NSString)
+            .expandingTildeInPath
+        guard let enumerator = FileManager.default.enumerator(atPath: root) else { return nil }
+        var best: (id: String, score: Int, activity: Double)?
+        for case let relPath as String in enumerator {
+            guard relPath.hasSuffix(".json"),
+                  let data = FileManager.default.contents(atPath: root + "/" + relPath),
+                  let record = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  record["cliSessionId"] as? String == cliId,
+                  let id = record["sessionId"] as? String,
+                  id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil
+            else { continue }
+            // Prefer the native session over an untitled resume-import copy
+            // (whose id is always local_<cliId>), then unarchived, then the
+            // most recently active.
+            var score = 0
+            if id != "local_\(cliId)" { score += 2 }
+            if (record["isArchived"] as? Bool) != true { score += 1 }
+            let activity = (record["lastActivityAt"] as? Double) ?? 0
+            if best == nil || (score, activity) > (best!.score, best!.activity) {
+                best = (id, score, activity)
+            }
+        }
+        return best?.id
     }
 
     /// Runs the tab-selection script, then activates the app regardless of the
