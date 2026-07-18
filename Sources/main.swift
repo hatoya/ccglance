@@ -275,6 +275,7 @@ enum Theme {
     // Font Awesome 6 Free Solid glyphs (font bundled in Resources)
     static let faPullRequest = "\u{E13C}"   // code-pull-request
     static let faMerge = "\u{F387}"         // code-merge
+    static let faHand = "\u{F256}"          // hand (waiting for input)
     static func faFont(size: CGFloat) -> NSFont? {
         NSFont(name: "FontAwesome6Free-Solid", size: size)
     }
@@ -482,8 +483,13 @@ final class SessionRowView: NSView {
             rightLabel.textColor = .labelColor
             highlight.layer?.backgroundColor = nil
         case "permission":
-            setGlyph(font: Self.systemGlyphFont, tooltip: nil)
-            glyph.stringValue = "●"
+            if let faFont = Self.faGlyphFont {
+                setGlyph(font: faFont, tooltip: nil)
+                glyph.stringValue = Theme.faHand
+            } else {
+                setGlyph(font: Self.systemGlyphFont, tooltip: nil)
+                glyph.stringValue = "●"
+            }
             glyph.textColor = Theme.yellow
             rightLabel.stringValue = "Waiting"
             rightLabel.textColor = Theme.yellow
@@ -506,7 +512,8 @@ final class SessionRowView: NSView {
     }
 
     // The glyph font switches between the system font (dot/spark) and Font
-    // Awesome (PR icon while idle). Fonts are resolved once — the FA lookup
+    // Awesome (hand while waiting, PR icon while idle). Fonts are resolved
+    // once — the FA lookup
     // runs after registration at launch — and reassigned only on change:
     // this runs on the 0.1s tick, and font/toolTip setters don't short-circuit.
     private static let systemGlyphFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
@@ -782,7 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        // Font Awesome glyphs are used for the idle-row PR status icon
+        // Font Awesome glyphs are used for the waiting-row hand and idle-row PR status icons
         if let fontURL = Bundle.main.url(forResource: "Font Awesome 6 Free-Solid-900", withExtension: "otf") {
             CTFontManagerRegisterFontsForURL(fontURL as CFURL, .process, nil)
         }
