@@ -308,6 +308,7 @@ enum JumpTarget {
     case terminalTab(tty: String)                        // Terminal.app: select tab by tty
     case itermSession(uuid: String)                      // iTerm2: select session by id
     case editorWorkspace(bundleId: String, cwd: String)  // VS Code family: refocus the cwd window
+    case claudeSession(sessionId: String)                // Claude Desktop: open the exact session
     case app(bundleId: String)                           // any other GUI host
 
     init?(session: SessionState) {
@@ -333,6 +334,10 @@ enum JumpTarget {
             self = .editorWorkspace(bundleId: b, cwd: cwd)
             return
         }
+        if host.bundleId == HostJumper.claudeDesktopBundleId {
+            self = .claudeSession(sessionId: session.sessionId)
+            return
+        }
         guard let b = host.bundleId else { return nil }  // ssh / CLI-launched: no target
         self = .app(bundleId: b)
     }
@@ -346,6 +351,7 @@ enum JumpTarget {
         switch self {
         case .terminalTab: return "Terminal"
         case .itermSession: return "iTerm2"
+        case .claudeSession: return "Claude Desktop"
         case .editorWorkspace(let bundleId, _), .app(let bundleId):
             return Self.appName(forBundleId: bundleId)
         }
@@ -418,10 +424,26 @@ enum HostJumper {
                 """)
             case .editorWorkspace(let bundleId, let cwd):
                 openWorkspace(bundleId: bundleId, cwd: cwd)
+            case .claudeSession(let sessionId):
+                openClaudeSession(sessionId: sessionId)
             case .app(let bundleId):
                 activate(bundleId: bundleId)
             }
         }
+    }
+
+    static let claudeDesktopBundleId = "com.anthropic.claudefordesktop"
+
+    /// Claude Desktop keeps every session inside one window, so activation
+    /// alone is a no-op when the app is already frontmost. Its claude://resume
+    /// deep link navigates to (importing if needed) the exact CLI session.
+    private static func openClaudeSession(sessionId: String) {
+        guard isRunning(claudeDesktopBundleId) else { return }
+        if sessionId.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
+           let url = URL(string: "claude://resume?session=\(sessionId)") {
+            NSWorkspace.shared.open(url)
+        }
+        activate(bundleId: claudeDesktopBundleId)
     }
 
     /// Runs the tab-selection script, then activates the app regardless of the
