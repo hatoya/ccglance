@@ -74,7 +74,7 @@ Claude Code lifecycle hooks (SessionStart / UserPromptSubmit / PreToolUse / Post
 
 ### PR status on idle sessions
 
-When a session goes idle, its row icon shows the pull-request state of the session's branch — open (green), draft (gray), merged (purple), or closed (red) — with a `PR #n` tooltip. The hook fetches this via the [gh CLI](https://cli.github.com) (`gh pr view`) in a detached child process on `Stop`/`SessionStart`, so nothing blocks Claude Code and the app itself never touches the network. If `gh` isn't installed or the branch has no PR, the plain idle dot is shown instead. While a session stays idle no hooks fire, so the state can go stale; use **Refresh session names** in the right-click menu to re-fetch it.
+When a session goes idle, its row icon shows the pull-request state of the session's branch — open (green), draft (gray), merged (purple), or closed (red) — with a `PR #n` tooltip. The hook fetches this via the [gh CLI](https://cli.github.com) (`gh pr view`) in a detached child process on `Stop`/`SessionStart` and right after PR-mutating tool calls (`gh pr create/merge/…`, the GitHub MCP equivalents), so nothing blocks Claude Code and the app itself never touches the network. If `gh` isn't installed or the branch has no PR, the plain idle dot is shown instead. While a session stays idle the app keeps the state fresh on its own — every 15 seconds for the first 30 minutes after the last hook event, then every 60 seconds — so merges or closes done on GitHub show up without touching the panel; **Refresh session names** in the right-click menu forces an immediate re-fetch.
 
 ### Supported surfaces
 
