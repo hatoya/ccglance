@@ -455,15 +455,17 @@ enum HostJumper {
         }
     }
 
-    /// Needs no automation permission — the universal fallback.
+    /// Needs no automation permission — the universal fallback. Uses
+    /// NSWorkspace (the `open -a` path) rather than NSRunningApplication:
+    /// on macOS 14+ cooperative activation silently declines activate()
+    /// requests from a background app, and this panel is never frontmost.
     private static func activate(bundleId: String) {
         DispatchQueue.main.async {
-            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else { return }
-            if #available(macOS 14.0, *) {
-                app.activate()
-            } else {
-                app.activate(options: [.activateIgnoringOtherApps])
-            }
+            guard isRunning(bundleId),
+                  let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else { return }
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: config)
         }
     }
 
@@ -568,6 +570,12 @@ final class GroupHeaderView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
+/// Jump button: accepts the first click even though the panel is never key,
+/// and is recognized by RootView's cursor tracking to show a pointing hand.
+final class HoverButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 // MARK: - Session row view (table-style)
 
 final class SessionRowView: NSView {
@@ -578,7 +586,7 @@ final class SessionRowView: NSView {
     let rightLabel = NSTextField(labelWithString: "")   // elapsed time if available, otherwise status name
     private let highlight = NSView()
     private let separator = NSBox()
-    private let jumpButton = NSButton()
+    private let jumpButton = HoverButton()
     private var jumpTarget: JumpTarget?
     private var jumpTitle = ""
     private var hovering = false
@@ -945,9 +953,20 @@ final class RootView: NSView {
         let x = convert(event.locationInWindow, from: nil).x
         if x <= Self.edgeWidth || x >= bounds.width - Self.edgeWidth {
             NSCursor.resizeLeftRight.set()
+        } else if hoveredView(for: event) is HoverButton {
+            // Cursor rects are never honored (the panel is never key), so the
+            // pointing hand over jump buttons must be set manually here too.
+            NSCursor.pointingHand.set()
         } else {
             NSCursor.arrow.set()
         }
+    }
+
+    private func hoveredView(for event: NSEvent) -> NSView? {
+        // hitTest expects the point in the receiver's superview coordinates
+        let p = superview?.convert(event.locationInWindow, from: nil)
+            ?? convert(event.locationInWindow, from: nil)
+        return hitTest(p)
     }
 
     override func cursorUpdate(with event: NSEvent) {
