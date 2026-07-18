@@ -440,32 +440,35 @@ enum HostJumper {
 
     private static func openWorkspace(bundleId: String, cwd: String) {
         guard isRunning(bundleId) else { return }  // never launch an app that has quit
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
+        // An already-open folder window is reused and focused; otherwise the
+        // editor opens it. Same out-of-process reasoning as activate().
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        p.arguments = ["-b", bundleId, cwd]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch {
             activate(bundleId: bundleId)
             return
         }
-        // Same semantics as `open -a <app> <dir>`: an already-open folder
-        // window is reused and focused; otherwise the editor opens it.
-        NSWorkspace.shared.open(
-            [URL(fileURLWithPath: cwd, isDirectory: true)],
-            withApplicationAt: appURL,
-            configuration: NSWorkspace.OpenConfiguration()
-        ) { _, error in
-            if error != nil { activate(bundleId: bundleId) }
-        }
+        p.waitUntilExit()
+        if p.terminationStatus != 0 { activate(bundleId: bundleId) }
     }
 
-    /// Needs no automation permission — the universal fallback. Uses
-    /// NSWorkspace (the `open -a` path) rather than NSRunningApplication:
-    /// on macOS 14+ cooperative activation silently declines activate()
-    /// requests from a background app, and this panel is never frontmost.
+    /// Needs no automation permission — the universal fallback. Plain
+    /// NSWorkspace/NSRunningApplication activation requests from this app are
+    /// ignored by cooperative activation (the non-activating .accessory panel
+    /// is never the active app), but explicitly yielding our activation claim
+    /// to the target first makes its activate() honored.
     private static func activate(bundleId: String) {
         DispatchQueue.main.async {
-            guard isRunning(bundleId),
-                  let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else { return }
-            let config = NSWorkspace.OpenConfiguration()
-            config.activates = true
-            NSWorkspace.shared.openApplication(at: url, configuration: config)
+            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else { return }
+            if #available(macOS 14.0, *) {
+                NSApp.yieldActivation(to: app)
+                app.activate()
+            } else {
+                app.activate(options: [.activateIgnoringOtherApps])
+            }
         }
     }
 
