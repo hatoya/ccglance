@@ -293,10 +293,16 @@ function removeAgent(base, input) {
   const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
   let i = id ? base.agents.findIndex((a) => a && a.id === id) : -1;
   if (i < 0) {
+    // Only match on a real description — a null one would match every
+    // description-less entry and remove an arbitrary running agent
     const desc = agentDescription(input);
-    i = base.agents.findIndex((a) => a && a.description === desc);
+    if (desc) i = base.agents.findIndex((a) => a && a.description === desc);
   }
-  if (i < 0) i = 0; // no match (e.g. truncated description) — drop the oldest
+  // No match: the PreToolUse was never recorded (lost to the unlocked
+  // fallback, or reset by a turn boundary). Removing an arbitrary entry would
+  // hide a different agent that is still running — leave the list alone and
+  // let the Stop-time reset clear any leftovers.
+  if (i < 0) return;
   base.agents.splice(i, 1);
 }
 
