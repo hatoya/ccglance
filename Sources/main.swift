@@ -1161,6 +1161,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         runInstaller()
         buildPanel()
 
+        // Entering another app's full-screen space drops the panel behind it —
+        // re-assert the front order once the new space has settled.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.panel?.orderFrontRegardless()
+        }
+
         updateChecker.onUpdateAvailable = { [weak self] release in
             self?.showUpdateAvailable(release)
             // Install automatically; failures keep the banner for a manual retry
@@ -1191,9 +1199,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false
         )
-        panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isFloatingPanel = true
+        // Must come AFTER isFloatingPanel: setting that flag rewrites the window
+        // level to .floating (3), which leaves the panel underneath full-screen
+        // apps and other status-level windows.
+        panel.level = .statusBar
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
         panel.backgroundColor = .clear
