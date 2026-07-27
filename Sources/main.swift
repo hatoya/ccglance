@@ -165,12 +165,14 @@ enum StateStore {
             guard let title = titles[url.deletingPathExtension().lastPathComponent] else { continue }
             // Read right before writing: resolving titles takes a while and
             // hooks may have rewritten (or removed) the file meanwhile — merge
-            // only the title into the freshest state to keep the race window tiny
+            // only the title into the freshest state to keep the race window tiny.
+            // Patch the raw JSON instead of re-encoding SessionState: the hooks
+            // own fields this app doesn't model, and a round-trip drops them.
             guard let data = try? Data(contentsOf: url),
-                  var state = try? JSONDecoder().decode(SessionState.self, from: data),
-                  state.title != title else { continue }
-            state.title = title
-            if let out = try? JSONEncoder().encode(state) {
+                  var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  obj["title"] as? String != title else { continue }
+            obj["title"] = title
+            if let out = try? JSONSerialization.data(withJSONObject: obj) {
                 try? out.write(to: url, options: .atomic)
             }
         }
