@@ -256,12 +256,15 @@ function captureHost() {
   return host;
 }
 
-// Running-subagent tracking: PreToolUse on an agent tool pushes an entry,
-// PostToolUse removes the matching one. tool_use_id (present on both events in
-// newer builds) is the correlation key, with tool_input.description as the
-// fallback. Background agents (run_in_background) are not tracked: their tool
-// call returns a task id immediately, so PostToolUse fires while the agent is
-// still running and the row would be wrong either way.
+// Running-subagent tracking: PreToolUse on an agent tool pushes an entry.
+// PostToolUse removes the matching one — but only for synchronous agents.
+// tool_use_id (present on both events in newer builds) is the correlation key,
+// with tool_input.description as the fallback.
+//
+// A background agent's tool call returns a task id immediately, so its
+// PostToolUse fires while the agent is still running: honoring it would erase
+// the row seconds after it appeared. Those entries stay until the turn-boundary
+// reset instead — the hooks get no signal when a background agent finishes.
 function agentDescription(input) {
   const ti = input.tool_input || {};
   const d =
@@ -271,9 +274,12 @@ function agentDescription(input) {
   return d ? d.slice(0, 120) : null;
 }
 
-function isBackgroundAgent(input) {
+function isSyncAgent(input) {
   const ti = input.tool_input || {};
-  return ti.run_in_background === true;
+  if (typeof ti.run_in_background === "boolean") return !ti.run_in_background;
+  // Absent: the classic Task tool has no such parameter and always blocks,
+  // while Agent runs in the background unless asked not to.
+  return input.tool_name === "Task";
 }
 
 function pushAgent(base, input, now) {
@@ -293,10 +299,16 @@ function removeAgent(base, input) {
   const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
   let i = id ? base.agents.findIndex((a) => a && a.id === id) : -1;
   if (i < 0) {
+    // Only match on a real description — a null one would match every
+    // description-less entry and remove an arbitrary running agent
     const desc = agentDescription(input);
-    i = base.agents.findIndex((a) => a && a.description === desc);
+    if (desc) i = base.agents.findIndex((a) => a && a.description === desc);
   }
-  if (i < 0) i = 0; // no match (e.g. truncated description) — drop the oldest
+  // No match: the PreToolUse was never recorded (lost to the unlocked
+  // fallback, or reset by a turn boundary). Removing an arbitrary entry would
+  // hide a different agent that is still running — leave the list alone and
+  // let the Stop-time reset clear any leftovers.
+  if (i < 0) return;
   base.agents.splice(i, 1);
 }
 
@@ -470,20 +482,32 @@ async function main() {
       base.status = "idle";
       base.tool = null;
       base.turnStartedAt = null;
+      base.turnActive = false;
       base.agents = [];
       saveState(base);
       launchApp();
       spawnPrFetch(sessionId, base.cwd);
       break;
 
-    case "UserPromptSubmit":
+    case "UserPromptSubmit": {
+      // A steering message sent while the turn is still running must not be
+      // mistaken for a new turn: clearing agents there erases rows for agents
+      // that are still working, and restarting the clock hides how long the
+      // turn has really been going. turnActive tracks the boundary explicitly —
+      // turnStartedAt can't, because PreToolUse and Notification also set it
+      // (an idle "waiting for input" notification fires between turns).
+      const newTurn = base.turnActive !== true;
+      base.turnActive = true;
       base.status = "thinking";
       base.tool = null;
       base.message = null;
-      base.turnStartedAt = now;
-      base.agents = [];
+      if (newTurn) {
+        base.turnStartedAt = now;
+        base.agents = [];
+      }
       saveState(base);
       break;
+    }
 
     case "PreToolUse":
       // Tools that block on user input never trigger a Notification event
@@ -497,7 +521,7 @@ async function main() {
         base.status = "tool";
         base.tool = TOOL_LABELS[input.tool_name] || "Using tool";
         base.message = null;
-        if (AGENT_TOOLS.has(input.tool_name) && !isBackgroundAgent(input)) {
+        if (AGENT_TOOLS.has(input.tool_name)) {
           pushAgent(base, input, now);
         }
       }
@@ -509,7 +533,7 @@ async function main() {
       base.status = "thinking";
       base.tool = null;
       base.message = null;
-      if (AGENT_TOOLS.has(input.tool_name) && !isBackgroundAgent(input)) {
+      if (AGENT_TOOLS.has(input.tool_name) && isSyncAgent(input)) {
         removeAgent(base, input);
       }
       saveState(base);
@@ -533,6 +557,7 @@ async function main() {
       base.tool = null;
       base.message = null;
       base.turnStartedAt = null;
+      base.turnActive = false;
       base.agents = [];
       saveState(base);
       spawnPrFetch(sessionId, base.cwd);
