@@ -1161,6 +1161,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         runInstaller()
         buildPanel()
 
+        // Entering another app's full-screen space drops the panel behind it —
+        // re-assert the front order once the new space has settled.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.panel?.orderFrontRegardless()
+        }
+
+        // Unplugging a display leaves the panel stranded outside the desktop
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.moveOnScreenIfNeeded()
+        }
+
         updateChecker.onUpdateAvailable = { [weak self] release in
             self?.showUpdateAvailable(release)
             // Install automatically; failures keep the banner for a manual retry
@@ -1191,9 +1206,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered, defer: false
         )
-        panel.level = .statusBar
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isFloatingPanel = true
+        // Must come AFTER isFloatingPanel: setting that flag rewrites the window
+        // level to .floating (3), which leaves the panel underneath full-screen
+        // apps and other status-level windows.
+        panel.level = .statusBar
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
         panel.backgroundColor = .clear
@@ -1502,6 +1520,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let v = screen.visibleFrame
             panel.setFrameOrigin(NSPoint(x: v.maxX - panel.frame.width - 20, y: v.maxY - 140))
         }
+        moveOnScreenIfNeeded()
+    }
+
+    // A position saved on a display that is no longer attached (or left outside
+    // the desktop by a resolution change) puts the panel off-screen, where it
+    // only flashes into view during Mission Control / space transitions. Pull it
+    // back whenever too little of it overlaps a screen.
+    private func moveOnScreenIfNeeded() {
+        let f = panel.frame
+        let needed = NSSize(width: min(40, f.width), height: min(40, f.height))
+        let visible = NSScreen.screens.contains { screen in
+            let overlap = f.intersection(screen.visibleFrame)
+            return overlap.width >= needed.width && overlap.height >= needed.height
+        }
+        guard !visible, let v = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else { return }
+        // setFrameOrigin fires windowDidMove, so the corrected spot is persisted
+        panel.setFrameOrigin(NSPoint(
+            x: min(max(f.minX, v.minX), max(v.maxX - f.width, v.minX)),
+            y: min(max(f.minY, v.minY), max(v.maxY - f.height, v.minY))
+        ))
     }
 
     // MARK: Hooks installer
