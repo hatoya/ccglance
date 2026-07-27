@@ -2,6 +2,14 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.8.1
+
+- Fixed the panel sitting behind other windows: the window level is now assigned after `isFloatingPanel` (which was silently resetting it to `.floating`), and the front order is re-asserted on space changes so entering another app's full-screen space no longer drops the panel behind it
+- A panel position saved on a disconnected external display is now clamped back into the visible area, both at launch and whenever the screen layout changes
+- Running subagent rows no longer disappear: a `PostToolUse` that matches no tracked entry leaves the list untouched instead of dropping the oldest one (previously it dropped the oldest running agent, and an entry with no description could be matched by any unrelated event), background agents (the default) are no longer removed the moment their tool call returns, and a steering message sent mid-turn keeps the running rows and elapsed time
+- Agents started with `run_in_background: true` now get a row as well — they were skipped entirely before. Since hooks receive no completion signal for them, those rows stay until the turn ends
+- Title write-back now merges into the raw session JSON instead of re-encoding it, so fields the app does not model are preserved
+
 ## v1.8.0
 
 - Hovering a session row now shows a jump button that focuses the session's host app (Claude Desktop via `claude://resume` without a reload, Terminal.app/iTerm2 via AppleScript down to the exact tab, VS Code-family and other GUI hosts via window activation)
