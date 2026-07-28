@@ -54,7 +54,7 @@ cleanup() {
   [ -n "$NODE_PID" ] && kill "$NODE_PID" 2>/dev/null
   [ -n "$DOG_PID" ] && kill "$DOG_PID" 2>/dev/null
   sleep 0.3
-  pkill -9 -x ccglance 2>/dev/null
+  pkill -9 -U "$(id -u)" -x ccglance 2>/dev/null
   [ -n "$BG_PID" ] && kill "$BG_PID" 2>/dev/null
   wait 2>/dev/null
   sleep 1
@@ -75,7 +75,7 @@ trap cleanup EXIT INT TERM
 echo "== stopping installed ccglance =="
 osascript -e 'tell application "ccglance" to quit' 2>/dev/null || true
 sleep 0.5
-pkill -x ccglance 2>/dev/null || true
+pkill -U "$(id -u)" -x ccglance 2>/dev/null || true
 sleep 0.5
 
 # Record at the README's canonical width (435pt -> 523pt region -> 1046px @2x)
@@ -87,7 +87,9 @@ echo "== launching recording build =="
 open "$REPO/build/ccglance.app"
 REC_PID=""
 for _ in $(seq 1 30); do
-  REC_PID=$(pgrep -x ccglance | head -1)
+  # -U scopes to this user (another login session may run its own ccglance),
+  # -n picks the newest process = the build we just opened
+  REC_PID=$(pgrep -n -U "$(id -u)" -x ccglance)
   [ -n "$REC_PID" ] && break
   sleep 0.5
 done
@@ -102,7 +104,7 @@ echo "recording instance pid=$REC_PID"
 # recording, which lands at the same saved origin and covers our panel.
 (
   while true; do
-    for p in $(pgrep -x ccglance); do
+    for p in $(pgrep -U "$(id -u)" -x ccglance); do
       [ "$p" != "$REC_PID" ] && kill -9 "$p" 2>/dev/null
     done
     sleep 0.3
