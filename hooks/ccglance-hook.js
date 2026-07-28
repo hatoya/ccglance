@@ -28,6 +28,7 @@ const TOOL_LABELS = {
 // Subagent-spawning tools ("Task" classically, "Agent" in newer builds)
 const AGENT_TOOLS = new Set(["Task", "Agent"]);
 const MAX_AGENTS = 10;
+const MAX_TASKS = 10;
 
 // Tools that pause and wait for the user to respond
 const INPUT_TOOLS = {
@@ -263,15 +264,16 @@ function captureHost() {
 //
 // A background agent's tool call returns a task id immediately, so its
 // PostToolUse fires while the agent is still running: honoring it would erase
-// the row seconds after it appeared. Those entries stay until the turn-boundary
-// reset instead — the hooks get no signal when a background agent finishes.
-function agentDescription(input) {
-  const ti = input.tool_input || {};
-  const d =
-    typeof ti.description === "string"
-      ? ti.description.replace(/[\x00-\x1f\x7f]+/g, " ").trim()
-      : "";
+// the row seconds after it appeared. Those entries are dropped by reapFinished
+// once the transcript reports them done, or by the turn-boundary reset.
+function cleanLabel(s) {
+  if (typeof s !== "string") return null;
+  const d = s.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
   return d ? d.slice(0, 120) : null;
+}
+
+function agentDescription(input) {
+  return cleanLabel((input.tool_input || {}).description);
 }
 
 function isSyncAgent(input) {
@@ -310,6 +312,124 @@ function removeAgent(base, input) {
   // let the Stop-time reset clear any leftovers.
   if (i < 0) return;
   base.agents.splice(i, 1);
+}
+
+// Background shell commands (Bash with run_in_background). Like a background
+// agent, the tool call returns as soon as the command is detached, so its
+// PostToolUse says nothing about the command still running — the entry is only
+// dropped when the transcript reports it finished (see reapFinished).
+function isBackgroundBash(input) {
+  return input.tool_name === "Bash" && (input.tool_input || {}).run_in_background === true;
+}
+
+// Without a description, label the row with the program name only. The raw
+// command would land both in the session file and on an always-on-top panel
+// that ends up in screenshots and screen shares, and background commands are
+// exactly where inline secrets live (TOKEN=… cmd, curl -H "Authorization: …").
+function commandLabel(cmd) {
+  if (typeof cmd !== "string") return null;
+  const words = cmd.trim().split(/\s+/);
+  let i = 0;
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++; // env assignments
+  return cleanLabel(words[i]);
+}
+
+function pushTask(base, input, now) {
+  const ti = input.tool_input || {};
+  const tasks = Array.isArray(base.tasks) ? base.tasks : [];
+  tasks.push({
+    id: typeof input.tool_use_id === "string" ? input.tool_use_id : null,
+    taskId: null, // shell id, filled in from the PostToolUse response
+    description: cleanLabel(ti.description) || commandLabel(ti.command),
+    startedAt: now,
+  });
+  base.tasks = tasks.slice(-MAX_TASKS);
+}
+
+// The completion notification names the command by its shell id, which only the
+// tool response carries — record it so both ids can be matched later.
+function recordTaskId(base, input) {
+  if (!Array.isArray(base.tasks) || base.tasks.length === 0) return;
+  const res = input.tool_response;
+  const taskId = res && typeof res === "object" ? res.backgroundTaskId : null;
+  if (typeof taskId !== "string" || !taskId) return;
+  const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
+  let entry = id ? base.tasks.find((t) => t && t.id === id) : null;
+  if (!entry && !id) {
+    // No correlation key: the newest entry still missing a taskId is the one
+    // that just started (entries are pushed in call order)
+    for (let i = base.tasks.length - 1; i >= 0; i--) {
+      if (base.tasks[i] && !base.tasks[i].taskId) {
+        entry = base.tasks[i];
+        break;
+      }
+    }
+  }
+  if (entry) entry.taskId = taskId;
+}
+
+// Background work reports completion only in the transcript: the harness
+// appends a <task-notification> block naming the finished command or agent by
+// <task-id> (shell id) and <tool-use-id> (the call that started it). No hook
+// event fires for it, so any hook running while something is tracked scans the
+// transcript tail and drops what has finished. The window has to be generous —
+// single transcript lines routinely run past 100KB (tool results, agent
+// transcripts), so a small tail would push notifications out of view within a
+// few tool calls. A notification that scrolls past it is only a missed early
+// removal: the turn-boundary reset still clears the row.
+const TAIL_BYTES = 512 * 1024;
+// The ids sit at the top of the block; its <result> can run for pages
+const BLOCK_HEAD = 600;
+
+function finishedIds(transcriptPath) {
+  const ids = new Set();
+  if (typeof transcriptPath !== "string" || !transcriptPath) return ids;
+  try {
+    const st = fs.statSync(transcriptPath);
+    let data;
+    if (st.size <= TAIL_BYTES) {
+      data = fs.readFileSync(transcriptPath, "utf8");
+    } else {
+      const fd = fs.openSync(transcriptPath, "r");
+      const buf = Buffer.alloc(TAIL_BYTES);
+      fs.readSync(fd, buf, 0, TAIL_BYTES, st.size - TAIL_BYTES);
+      fs.closeSync(fd);
+      data = buf.toString("utf8");
+    }
+    // A real notification is the whole value of a JSON string field, so its
+    // opening tag always follows the field's quote — anchoring on that quote
+    // skips prose that merely quotes the format mid-sentence (this feature's
+    // own development sessions do), which would otherwise hand back ids for
+    // tasks that are still running. Only a bounded head of each block is
+    // scanned: the ids sit at the top, while the closing tag may be pages away
+    // or past the window entirely.
+    const OPEN = '"<task-notification>';
+    let start = data.indexOf(OPEN);
+    while (start !== -1) {
+      const head = data.slice(start, start + BLOCK_HEAD);
+      const re = /<(task-id|tool-use-id)>([^<>\\"]{1,128})<\/\1>/g;
+      let m;
+      while ((m = re.exec(head)) !== null) ids.add(m[2]);
+      start = data.indexOf(OPEN, start + 1);
+    }
+  } catch {}
+  return ids;
+}
+
+function reapFinished(base, transcriptPath) {
+  const agents = Array.isArray(base.agents) ? base.agents : [];
+  const tasks = Array.isArray(base.tasks) ? base.tasks : [];
+  if (agents.length === 0 && tasks.length === 0) return;
+  const done = finishedIds(transcriptPath);
+  if (done.size === 0) return;
+  if (agents.length > 0) {
+    base.agents = agents.filter((a) => !(a && a.id && done.has(a.id)));
+  }
+  if (tasks.length > 0) {
+    base.tasks = tasks.filter(
+      (t) => !(t && ((t.id && done.has(t.id)) || (t.taskId && done.has(t.taskId))))
+    );
+  }
 }
 
 function launchApp() {
@@ -477,6 +597,12 @@ async function main() {
   }
   base.updatedAt = now;
 
+  // Drop rows for background work that has finished since the last event. The
+  // turn-boundary events below clear both lists outright, so they skip it.
+  if (ev === "PreToolUse" || ev === "PostToolUse" || ev === "Notification") {
+    reapFinished(base, input.transcript_path);
+  }
+
   switch (input.hook_event_name) {
     case "SessionStart":
       base.status = "idle";
@@ -484,6 +610,7 @@ async function main() {
       base.turnStartedAt = null;
       base.turnActive = false;
       base.agents = [];
+      base.tasks = [];
       saveState(base);
       launchApp();
       spawnPrFetch(sessionId, base.cwd);
@@ -504,6 +631,7 @@ async function main() {
       if (newTurn) {
         base.turnStartedAt = now;
         base.agents = [];
+        base.tasks = [];
       }
       saveState(base);
       break;
@@ -523,6 +651,8 @@ async function main() {
         base.message = null;
         if (AGENT_TOOLS.has(input.tool_name)) {
           pushAgent(base, input, now);
+        } else if (isBackgroundBash(input)) {
+          pushTask(base, input, now);
         }
       }
       if (base.turnStartedAt == null) base.turnStartedAt = now;
@@ -535,6 +665,8 @@ async function main() {
       base.message = null;
       if (AGENT_TOOLS.has(input.tool_name) && isSyncAgent(input)) {
         removeAgent(base, input);
+      } else if (isBackgroundBash(input)) {
+        recordTaskId(base, input);
       }
       saveState(base);
       if (isPrMutatingTool(input)) spawnPrFetch(sessionId, base.cwd);
@@ -559,6 +691,7 @@ async function main() {
       base.turnStartedAt = null;
       base.turnActive = false;
       base.agents = [];
+      base.tasks = [];
       saveState(base);
       spawnPrFetch(sessionId, base.cwd);
       break;
