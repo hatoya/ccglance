@@ -2,6 +2,13 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.9.0
+
+- Bash commands run with `run_in_background: true` now get their own indented row under the session, next to the subagent rows — marked with a `$` prefix and ticking their own elapsed time (previously a background dev server or long test run was invisible). Rows without a tool description show only the program name so raw commands (where inline secrets live) never land in the session JSON or on the always-on-top panel
+- Background work completion is now detected by scanning the transcript tail for the harness's `<task-notification>` blocks; as a side effect, background agent rows disappear as soon as the agent finishes instead of lingering until the end of the turn
+- Re-recorded the README demo GIF to include the background command row
+- Fixed the pr-screenshots upload steps in the docs so adding a new screenshot preserves the existing ones
+
 ## v1.8.1
 
 - Fixed the panel sitting behind other windows: the window level is now assigned after `isFloatingPanel` (which was silently resetting it to `.floating`), and the front order is re-asserted on space changes so entering another app's full-screen space no longer drops the panel behind it
