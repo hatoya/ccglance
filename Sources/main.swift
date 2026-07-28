@@ -11,6 +11,13 @@ struct AgentTask: Codable {
     var startedAt: Double?
 }
 
+struct BackgroundTask: Codable {
+    var id: String?          // tool_use_id of the Bash call that started it
+    var taskId: String?      // background shell id from the tool response
+    var description: String? // tool description, falling back to the command
+    var startedAt: Double?
+}
+
 struct PRInfo: Codable {
     var number: Int?
     var state: String?    // "OPEN" | "MERGED" | "CLOSED"
@@ -38,6 +45,7 @@ struct SessionState: Codable {
     var createdAt: Double?   // set once at SessionStart (optional: older files lack it)
     var updatedAt: Double
     var agents: [AgentTask]?  // running subagents (optional: older files lack it)
+    var tasks: [BackgroundTask]?  // running background commands (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
     var host: HostInfo?       // jump-to-session target (optional: older files lack it)
 }
@@ -897,9 +905,26 @@ final class SessionRowView: NSView {
     }
 }
 
-// MARK: - Agent row view (running subagent, indented under its session row)
+// MARK: - Child row view (running subagent or background command, indented under its session row)
 
-final class AgentRowView: NSView {
+/// The indented rows under a session, in display order: subagents first, then
+/// background commands.
+enum ChildRow {
+    case agent(AgentTask)
+    case command(BackgroundTask)
+
+    static func all(of session: SessionState) -> [ChildRow] {
+        (session.agents ?? []).map { ChildRow.agent($0) }
+            + (session.tasks ?? []).map { ChildRow.command($0) }
+    }
+
+    /// Row count without building the array (the 0.1s tick asks for it often)
+    static func count(of session: SessionState) -> Int {
+        (session.agents?.count ?? 0) + (session.tasks?.count ?? 0)
+    }
+}
+
+final class ChildRowView: NSView {
     static let height: CGFloat = 24
 
     let treeGlyph = NSTextField(labelWithString: "└")
@@ -970,12 +995,22 @@ final class AgentRowView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(_ agent: AgentTask, sparkIndex: Int, now: TimeInterval) {
+    func update(_ child: ChildRow, sparkIndex: Int, now: TimeInterval) {
+        let name: String
+        let startedAt: Double?
+        switch child {
+        case .agent(let agent):
+            name = (agent.description?.isEmpty == false) ? agent.description!
+                : (agent.type?.isEmpty == false) ? agent.type! : "agent"
+            startedAt = agent.startedAt
+        case .command(let task):
+            // "$ " marks a background shell command apart from an agent
+            name = "$ " + ((task.description?.isEmpty == false) ? task.description! : "command")
+            startedAt = task.startedAt
+        }
         spark.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
-        let name = (agent.description?.isEmpty == false) ? agent.description!
-            : (agent.type?.isEmpty == false) ? agent.type! : "agent"
         descLabel.stringValue = name
-        if let start = agent.startedAt {
+        if let start = startedAt {
             let sec = max(0, Int(now - start))
             timeLabel.stringValue = sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s"
         } else {
@@ -1130,7 +1165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var updateMenuItem: NSMenuItem!
     private let updateChecker = UpdateChecker()
     private var rows: [SessionRowView] = []
-    private var agentRows: [AgentRowView] = []
+    private var childRows: [ChildRowView] = []
     private var groupHeaders: [GroupHeaderView] = []
     private var lastSignature = ""
     private var animTimer: Timer?
@@ -1390,17 +1425,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .map { (name: $0.key, sessions: $0.value) }
             .sorted { $0.name.lowercased() < $1.name.lowercased() }
 
-        // Rebuild views only when the group structure (or agent counts) changes
+        // Rebuild views only when the group structure (or child row counts) changes
         let signature = grouped.map { group in
-            let agentCounts = group.sessions.map { String($0.agents?.count ?? 0) }.joined(separator: ",")
-            return "\(group.name)#\(group.sessions.count)#\(agentCounts)"
+            let childCounts = group.sessions
+                .map { String(ChildRow.count(of: $0)) }
+                .joined(separator: ",")
+            return "\(group.name)#\(group.sessions.count)#\(childCounts)"
         }.joined(separator: "|")
         if signature != lastSignature {
             lastSignature = signature
             for v in stack.arrangedSubviews { stack.removeArrangedSubview(v); v.removeFromSuperview() }
             groupHeaders = []
             rows = []
-            agentRows = []
+            childRows = []
             for group in grouped {
                 let header = GroupHeaderView(frame: .zero)
                 header.label.stringValue = group.name
@@ -1422,35 +1459,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         row.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
                     ])
                     rows.append(row)
-                    for _ in session.agents ?? [] {
-                        let agentRow = AgentRowView(frame: .zero)
-                        agentRow.translatesAutoresizingMaskIntoConstraints = false
-                        stack.addArrangedSubview(agentRow)
+                    for _ in 0..<ChildRow.count(of: session) {
+                        let childRow = ChildRowView(frame: .zero)
+                        childRow.translatesAutoresizingMaskIntoConstraints = false
+                        stack.addArrangedSubview(childRow)
                         NSLayoutConstraint.activate([
-                            agentRow.heightAnchor.constraint(equalToConstant: AgentRowView.height),
-                            agentRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
-                            agentRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+                            childRow.heightAnchor.constraint(equalToConstant: ChildRowView.height),
+                            childRow.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+                            childRow.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
                         ])
-                        agentRows.append(agentRow)
+                        childRows.append(childRow)
                     }
                 }
             }
         }
         var rowIndex = 0
-        var agentRowIndex = 0
+        var childRowIndex = 0
         for group in grouped {
             for (j, session) in group.sessions.enumerated() {
                 guard rowIndex < rows.count else { break }
                 rows[rowIndex].update(session, sparkIndex: sparkIndex, now: now)
-                let agents = session.agents ?? []
+                let children = ChildRow.all(of: session)
                 // border after every visual row except the group's last one
                 let isLastInGroup = j == group.sessions.count - 1
-                rows[rowIndex].showsSeparator = !agents.isEmpty || !isLastInGroup
-                for (k, agent) in agents.enumerated() {
-                    guard agentRowIndex < agentRows.count else { break }
-                    agentRows[agentRowIndex].update(agent, sparkIndex: sparkIndex, now: now)
-                    agentRows[agentRowIndex].showsSeparator = !(isLastInGroup && k == agents.count - 1)
-                    agentRowIndex += 1
+                rows[rowIndex].showsSeparator = !children.isEmpty || !isLastInGroup
+                for (k, child) in children.enumerated() {
+                    guard childRowIndex < childRows.count else { break }
+                    childRows[childRowIndex].update(child, sparkIndex: sparkIndex, now: now)
+                    childRows[childRowIndex].showsSeparator = !(isLastInGroup && k == children.count - 1)
+                    childRowIndex += 1
                 }
                 rowIndex += 1
             }
@@ -1477,12 +1514,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Height follows content; width is the user's (horizontal resize only).
         let crabArea = ClawdView.topMargin + crab.intrinsicContentSize.height + ClawdView.bottomMargin
-        let agentCount = sessions.reduce(0) { $0 + ($1.agents?.count ?? 0) }
+        let childCount = sessions.reduce(0) { $0 + ChildRow.count(of: $1) }
         var contentHeight: CGFloat = crabArea + (sessions.isEmpty
             ? 30
             : CGFloat(grouped.count) * GroupHeaderView.height
                 + CGFloat(sessions.count) * SessionRowView.height
-                + CGFloat(agentCount) * AgentRowView.height + 8)
+                + CGFloat(childCount) * ChildRowView.height + 8)
         if !updateBanner.isHidden {
             contentHeight += 24  // room for the update banner at the bottom
         }
