@@ -27,6 +27,7 @@ function write(id, state) {
       message: state.message || null,
       turnStartedAt: state.turnStartedAt ?? null,
       agents: state.agents || null,
+      tasks: state.tasks || null,
       pr: state.pr || null,
       updatedAt: now,
     })
@@ -39,7 +40,8 @@ function tick() {
   const now = Date.now() / 1000;
   const t = (now - start) % 24; // 24s loop
 
-  // Session 1: steadily working with two subagents, timer already past 1 minute
+  // Session 1: steadily working with two subagents and a background command,
+  // timer already past 1 minute
   write(IDS[0], {
     project: "ccglance",
     title: "Translate README to English",
@@ -48,6 +50,9 @@ function tick() {
     agents: [
       { description: "Survey docs structure", type: "Explore", startedAt: start - 41 },
       { description: "Draft translation", type: "general-purpose", startedAt: start - 23 },
+    ],
+    tasks: [
+      { id: "demo-bash-1", taskId: "b1", description: "npm run dev", startedAt: start - 62 },
     ],
   });
 
