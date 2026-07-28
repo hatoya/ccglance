@@ -48,12 +48,18 @@ VOICEVOXのMCPサーバーを使用して、作業完了時に音声通知を行
   - **画像はPRブランチに含めない**: 専用の `pr-screenshots` orphanブランチで管理し、mainマージ後もリポジトリのワークツリーに画像が残らないようにする
   - アップロード手順（gitプラミングで作業ツリーを汚さず実行）:
     ```bash
+    git fetch origin pr-screenshots
+    OLD_COUNT=$(git ls-tree origin/pr-screenshots | wc -l)
     BLOB_SHA=$(git hash-object -w /tmp/<feature>.png)
-    TREE_SHA=$(printf "100644 blob %s\tpr-<PR番号>-<feature>.png\n" "$BLOB_SHA" | git mktree)
-    # pr-screenshotsブランチが既にある場合は親に指定: -p $(git rev-parse origin/pr-screenshots)
-    COMMIT_SHA=$(git commit-tree "$TREE_SHA" -m "Add PR #<PR番号> <feature> screenshot")
-    git push origin "$COMMIT_SHA:refs/heads/pr-screenshots"
+    TREE_SHA=$({ git ls-tree origin/pr-screenshots; printf "100644 blob %s\tpr-<PR番号>-<feature>.png\n" "$BLOB_SHA"; } | sort -k4 | git mktree)
+    COMMIT_SHA=$(git commit-tree "$TREE_SHA" -p "$(git rev-parse origin/pr-screenshots)" -m "Add PR #<PR番号> <feature> screenshot")
+    git push origin "${COMMIT_SHA}:refs/heads/pr-screenshots"
+    # 検証: ファイル数が $OLD_COUNT + 1 になっていること（減っていたら過去のスクショを消している）
+    git fetch origin pr-screenshots && echo "$OLD_COUNT -> $(git ls-tree FETCH_HEAD | wc -l)"
     ```
+  - **`git mktree` は渡した行だけでツリーを作る**ため、上記のように `git ls-tree` で既存ツリーを取り込むこと。新規ファイルの行だけを渡すと、親コミットを指定していてもブランチ先端がそのファイル1件だけになり、過去のPR本文が参照している画像リンクが全て壊れる
+  - `pr-screenshots` ブランチが存在しない初回のみ、`git fetch` / `git ls-tree origin/pr-screenshots` / `-p "$(git rev-parse origin/pr-screenshots)"` を省略する
+  - 同名ファイルを差し替える場合は `git ls-tree origin/pr-screenshots | grep -vF '<差し替えるファイル名>'` で既存行を除いてから追加する（`git mktree` は同名エントリの重複をエラーにせず、同じ名前が2つ入った壊れたツリーを作る）
   - PR本文の `## Screenshot` セクションに以下の形式で埋め込む:
     ```
     <img src="https://github.com/hatoya/ccglance/raw/pr-screenshots/pr-<PR番号>-<feature>.png" alt="説明" width="900" />
