@@ -2,6 +2,12 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.9.1
+
+- Background tasks started by the `Monitor` tool (CI watches, agent-completion waits) now show up as child rows under their session — previously these were the "sometimes a background task is missing" cases. Monitor rows show a label only (description, watch condition, or program name) with no `$` prefix, and raw commands stay out of the session JSON as before
+- A foreground Bash command promoted to the background mid-run (e.g. via Ctrl-B) now gets its background row too
+- Monitor rows are matched by `tool_use_id`, so intermediate task notifications no longer clear them early — they disappear on the completion notification
+
 ## v1.9.0
 
 - Bash commands run with `run_in_background: true` now get their own indented row under the session, next to the subagent rows — marked with a `$` prefix and ticking their own elapsed time (previously a background dev server or long test run was invisible). Rows without a tool description show only the program name so raw commands (where inline secrets live) never land in the session JSON or on the always-on-top panel
