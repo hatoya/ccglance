@@ -16,6 +16,7 @@ struct BackgroundTask: Codable {
     var taskId: String?      // background shell id from the tool response
     var description: String? // tool description, falling back to the command
     var startedAt: Double?
+    var kind: String?        // "monitor" for Monitor watches; nil for shell commands
 }
 
 struct PRInfo: Codable {
@@ -1004,8 +1005,13 @@ final class ChildRowView: NSView {
                 : (agent.type?.isEmpty == false) ? agent.type! : "agent"
             startedAt = agent.startedAt
         case .command(let task):
-            // "$ " marks a background shell command apart from an agent
-            name = "$ " + ((task.description?.isEmpty == false) ? task.description! : "command")
+            // "$ " marks a background shell command; a Monitor watch is not a
+            // command the user could run, so its label stands alone
+            if task.kind == "monitor" {
+                name = (task.description?.isEmpty == false) ? task.description! : "monitor"
+            } else {
+                name = "$ " + ((task.description?.isEmpty == false) ? task.description! : "command")
+            }
             startedAt = task.startedAt
         }
         spark.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]

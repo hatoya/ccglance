@@ -23,6 +23,7 @@ const TOOL_LABELS = {
   WebSearch: "Browsing",
   Task: "Running agent",
   Agent: "Running agent",
+  Monitor: "Monitoring",
 };
 
 // Subagent-spawning tools ("Task" classically, "Agent" in newer builds)
@@ -322,6 +323,16 @@ function isBackgroundBash(input) {
   return input.tool_name === "Bash" && (input.tool_input || {}).run_in_background === true;
 }
 
+// Monitor watches (CI runs, agent completion, file conditions) are background
+// tasks too: the tool call returns "Monitor started" immediately and the watch
+// keeps running. Its task id only appears in the response text (never as a
+// structured field), so the entry is matched by tool_use_id alone — which is
+// also what keeps per-event notifications (task-id only) from reaping a
+// monitor that is still running.
+function isMonitor(input) {
+  return input.tool_name === "Monitor";
+}
+
 // Without a description, label the row with the program name only. The raw
 // command would land both in the session file and on an always-on-top panel
 // that ends up in screenshots and screen shares, and background commands are
@@ -334,15 +345,23 @@ function commandLabel(cmd) {
   return cleanLabel(words[i]);
 }
 
-function pushTask(base, input, now) {
+function pushTask(base, input, now, extra) {
   const ti = input.tool_input || {};
   const tasks = Array.isArray(base.tasks) ? base.tasks : [];
-  tasks.push({
-    id: typeof input.tool_use_id === "string" ? input.tool_use_id : null,
-    taskId: null, // shell id, filled in from the PostToolUse response
-    description: cleanLabel(ti.description) || commandLabel(ti.command),
-    startedAt: now,
-  });
+  tasks.push(
+    Object.assign(
+      {
+        id: typeof input.tool_use_id === "string" ? input.tool_use_id : null,
+        taskId: null, // shell id, filled in from the PostToolUse response
+        // "until" is Monitor's condition ("agent completes") — as safe to show
+        // as a description, unlike the raw command
+        description:
+          cleanLabel(ti.description) || cleanLabel(ti.until) || commandLabel(ti.command),
+        startedAt: now,
+      },
+      extra
+    )
+  );
   base.tasks = tasks.slice(-MAX_TASKS);
 }
 
@@ -653,6 +672,8 @@ async function main() {
           pushAgent(base, input, now);
         } else if (isBackgroundBash(input)) {
           pushTask(base, input, now);
+        } else if (isMonitor(input)) {
+          pushTask(base, input, now, { kind: "monitor" });
         }
       }
       if (base.turnStartedAt == null) base.turnStartedAt = now;
@@ -667,6 +688,15 @@ async function main() {
         removeAgent(base, input);
       } else if (isBackgroundBash(input)) {
         recordTaskId(base, input);
+      } else if (input.tool_name === "Bash") {
+        // A foreground command moved to the background mid-run (Ctrl-B, or the
+        // harness promoting a long runner): no PreToolUse recorded it, but its
+        // response carries a backgroundTaskId — add the row now.
+        const res = input.tool_response;
+        const taskId = res && typeof res === "object" ? res.backgroundTaskId : null;
+        if (typeof taskId === "string" && taskId) {
+          pushTask(base, input, now, { taskId });
+        }
       }
       saveState(base);
       if (isPrMutatingTool(input)) spawnPrFetch(sessionId, base.cwd);
