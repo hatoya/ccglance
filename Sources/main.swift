@@ -1005,12 +1005,8 @@ final class ChildRowView: NSView {
                 : (agent.type?.isEmpty == false) ? agent.type! : "agent"
             startedAt = agent.startedAt
         case .command(let task):
-            // "$ " marks a background shell command apart from an agent;
-            // "⏱ " marks a Monitor watch (not a command the user could run)
-            let isMonitor = task.kind == "monitor"
-            let fallback = isMonitor ? "monitor" : "command"
-            let prefix = isMonitor ? "⏱ " : "$ "
-            name = prefix + ((task.description?.isEmpty == false) ? task.description! : fallback)
+            let fallback = task.kind == "monitor" ? "monitor" : "command"
+            name = (task.description?.isEmpty == false) ? task.description! : fallback
             startedAt = task.startedAt
         }
         spark.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
