@@ -301,6 +301,7 @@ enum Theme {
     static let faPullRequest = "\u{E13C}"   // code-pull-request
     static let faMerge = "\u{F387}"         // code-merge
     static let faHand = "\u{F256}"          // hand (waiting for input)
+    static let faCircleCheck = "\u{F058}"   // circle-check (plan approved)
     static func faFont(size: CGFloat) -> NSFont? {
         NSFont(name: "FontAwesome6Free-Solid", size: size)
     }
@@ -682,7 +683,7 @@ final class SessionRowView: NSView {
 
     let glyph = NSTextField(labelWithString: "")
     let projectLabel = NSTextField(labelWithString: "")
-    let planBadge = BadgeLabel(labelWithString: "")     // "PLAN ✓" after plan approval, until turn end
+    let planBadge = BadgeLabel(labelWithString: "")     // green check icon after plan approval, until turn end
     let modeBadge = BadgeLabel(labelWithString: "")     // permission mode ("PLAN", "BYPASS", …)
     let rightLabel = NSTextField(labelWithString: "")   // elapsed time if available, otherwise status name
     // Last-applied permissionMode (diff guard); nil matches the initial empty
@@ -725,12 +726,12 @@ final class SessionRowView: NSView {
         projectLabel.lineBreakMode = .byTruncatingTail
         rightLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         rightLabel.alignment = .right
-        for badge in [modeBadge, planBadge] {
-            badge.font = NSFont.systemFont(ofSize: 9, weight: .bold)
-            badge.alignment = .center
-            badge.wantsLayer = true
-            badge.layer?.cornerRadius = 3
-        }
+        modeBadge.font = NSFont.systemFont(ofSize: 9, weight: .bold)
+        modeBadge.alignment = .center
+        modeBadge.wantsLayer = true
+        modeBadge.layer?.cornerRadius = 3
+        planBadge.font = Self.faGlyphFont ?? NSFont.systemFont(ofSize: 11, weight: .bold)
+        planBadge.alignment = .center
 
         // Long session names must truncate with an ellipsis, never push the
         // right column: the name compresses first, the time/status never does.
@@ -886,10 +887,9 @@ final class SessionRowView: NSView {
         let approved = s.planApprovedAt != nil
         if approved != planShown {
             planShown = approved
-            planBadge.stringValue = approved ? "PLAN ✓" : ""
+            planBadge.stringValue = approved
+                ? (Self.faGlyphFont != nil ? Theme.faCircleCheck : "✓") : ""
             planBadge.textColor = Theme.prOpen
-            planBadge.layer?.backgroundColor =
-                approved ? Theme.prOpen.withAlphaComponent(0.18).cgColor : nil
             planBadge.toolTip = approved ? "Plan approved" : nil
             planGap?.constant = approved ? -6 : 0
             planBadge.invalidateIntrinsicContentSize()
