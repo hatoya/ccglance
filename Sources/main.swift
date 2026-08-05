@@ -104,6 +104,60 @@ enum StateStore {
             .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)
     }
 
+    /// All Desktop session stores: the default one plus one per
+    /// claude-desktop-switcher profile. Isolated environments give the Desktop
+    /// app its own user-data dir (profile.toml's desktop_user_data_dir, sibling
+    /// desktop-data as fallback), so titles edited there never reach the
+    /// default store. Mirrors desktopStoreRoots() in ccglance-hook.js.
+    static func desktopStoreRoots() -> [URL] {
+        let fm = FileManager.default
+        var roots = [desktopStoreDir]
+        let profilesDir = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent(".context-switcher-claude/profiles", isDirectory: true)
+        guard let profiles = try? fm.contentsOfDirectory(
+            at: profilesDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return roots }
+        for profile in profiles.sorted(by: { $0.path < $1.path }) {
+            var dataDir: URL?
+            if let toml = try? String(contentsOf: profile.appendingPathComponent("profile.toml"), encoding: .utf8) {
+                for line in toml.split(separator: "\n") {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    guard trimmed.hasPrefix("desktop_user_data_dir") else { continue }
+                    // Take the first well-formed `desktop_user_data_dir = "…"`
+                    // line, like the hook's regex: skip lookalike keys,
+                    // missing `=`, and unterminated or empty quotes
+                    let rest = trimmed.dropFirst("desktop_user_data_dir".count)
+                        .drop(while: { $0 == " " || $0 == "\t" })
+                    guard rest.first == "=" else { continue }
+                    let quoted = rest.split(separator: "\"", omittingEmptySubsequences: false)
+                    guard quoted.count >= 3, !quoted[1].isEmpty else { continue }
+                    var value = String(quoted[1])
+                    if value.hasPrefix("~/") {
+                        value = fm.homeDirectoryForCurrentUser
+                            .appendingPathComponent(String(value.dropFirst(2))).path
+                    }
+                    let url = value.hasPrefix("/")
+                        ? URL(fileURLWithPath: value)
+                        : profile.appendingPathComponent(value)
+                    // A stale/bad value must fall through to the sibling guess below
+                    if fm.fileExists(atPath: url.path) { dataDir = url }
+                    break
+                }
+            }
+            if dataDir == nil {
+                let fallback = profile.appendingPathComponent("desktop-data", isDirectory: true)
+                if fm.fileExists(atPath: fallback.path) { dataDir = fallback }
+            }
+            guard let dataDir else { continue }
+            let root = dataDir.appendingPathComponent("claude-code-sessions", isDirectory: true)
+            if fm.fileExists(atPath: root.path),
+               !roots.contains(where: { $0.standardizedFileURL.path == root.standardizedFileURL.path }) {
+                roots.append(root)
+            }
+        }
+        return roots
+    }
+
     /// Parse one Desktop store file into the session ids it maps and its title.
     private static func parseStoreFile(_ url: URL) -> (ids: [String], title: String)? {
         guard let data = try? Data(contentsOf: url),
@@ -120,20 +174,21 @@ enum StateStore {
     }
 
     static func desktopTitles(for sessionIds: Set<String>) -> [String: String] {
-        guard let enumerator = FileManager.default.enumerator(
-            at: desktopStoreDir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [:] }
-
         var best: [String: (title: String, mtime: Date)] = [:]
-        for case let url as URL in enumerator where url.pathExtension == "json" {
-            guard let (ids, title) = parseStoreFile(url) else { continue }
-            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate ?? .distantPast
-            for id in ids where sessionIds.contains(id) {
-                if best[id] == nil || mtime > best[id]!.mtime {
-                    best[id] = (title, mtime)
+        for root in desktopStoreRoots() {
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for case let url as URL in enumerator where url.pathExtension == "json" {
+                guard let (ids, title) = parseStoreFile(url) else { continue }
+                let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                for id in ids where sessionIds.contains(id) {
+                    if best[id] == nil || mtime > best[id]!.mtime {
+                        best[id] = (title, mtime)
+                    }
                 }
             }
         }
@@ -211,10 +266,21 @@ enum StateStore {
 /// untitled-session poll in AppDelegate stays as a fallback for dropped events.
 final class TitleStoreWatcher {
     private var stream: FSEventStreamRef?
+    private var watchedPaths: [String] = []
     private let queue = DispatchQueue(label: "ccglance.title-watcher", qos: .utility)
 
-    func start() {
-        guard stream == nil else { return }
+    /// (Re)subscribe to every Desktop store root. Idempotent: a no-op while the
+    /// root set is unchanged, so callers can invoke it periodically to pick up
+    /// stores that appear after launch (new CSW profiles, first Desktop run).
+    /// Returns true when a (re)subscription happened — events buffered in the
+    /// old stream are lost across a restart, so the caller should follow up
+    /// with a full refresh.
+    @discardableResult
+    func start() -> Bool {
+        let paths = StateStore.desktopStoreRoots().map { $0.path }
+        guard stream == nil || paths != watchedPaths else { return false }
+        stop()
+        watchedPaths = paths
         // The context retains self so an in-flight callback can never race a
         // deallocation; the stream holds the watcher alive until stop()
         var context = FSEventStreamContext(
@@ -244,18 +310,19 @@ final class TitleStoreWatcher {
         // 0.5s latency coalesces edit bursts into one callback
         guard let s = FSEventStreamCreate(
             nil, callback, &context,
-            [StateStore.desktopStoreDir.path] as CFArray,
+            paths as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.5,
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents)
-        ) else { return }
+        ) else { return false }
         FSEventStreamSetDispatchQueue(s, queue)
         guard FSEventStreamStart(s) else {
             FSEventStreamInvalidate(s)
             FSEventStreamRelease(s)
-            return
+            return false
         }
         stream = s
+        return true
     }
 
     func stop() {
@@ -1510,7 +1577,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // is running: watch the profiles dir mtime (changes on entry add/remove)
         // and re-run the idempotent installer. One stat per minute, none for
         // non-CSW users (the dir doesn't exist).
-        if tickCount % 600 == 0 { catchUpNewEnvironments() }
+        if tickCount % 600 == 0 {
+            catchUpNewEnvironments()
+            // Desktop stores that appeared after launch (new CSW profile,
+            // first Desktop run in one): resubscribe the FSEvents watcher.
+            // No-op while the root set is unchanged; after a restart, sweep
+            // once for renames that slipped through the resubscribe window.
+            if titleWatcher.start() {
+                DispatchQueue.global(qos: .utility).async { StateStore.refreshTitles() }
+            }
+        }
 
         // Fresh sessions start without a title (Claude Desktop generates it a
         // few seconds after the first prompt, but hooks only re-resolve it on
