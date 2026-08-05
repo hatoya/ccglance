@@ -663,6 +663,12 @@ async function main() {
     input.permission_mode.length > 0 &&
     input.permission_mode.length <= 64
   ) {
+    // Entering plan mode starts a new plan cycle — the approval badge from
+    // the previous plan no longer applies. This is the only place the badge
+    // is cleared: it survives turn ends and session restarts.
+    if (input.permission_mode === "plan" && base.permissionMode !== "plan") {
+      base.planApprovedAt = null;
+    }
     base.permissionMode = input.permission_mode;
   }
   if (title) base.title = title;
@@ -688,7 +694,6 @@ async function main() {
     case "SessionStart":
       base.status = "idle";
       base.tool = null;
-      base.planApprovedAt = null;
       base.turnStartedAt = null;
       base.turnActive = false;
       base.agents = [];
@@ -712,7 +717,6 @@ async function main() {
       base.message = null;
       if (newTurn) {
         base.turnStartedAt = now;
-        base.planApprovedAt = null;
         base.agents = [];
         base.tasks = [];
       }
@@ -749,8 +753,14 @@ async function main() {
       base.tool = null;
       base.message = null;
       // ExitPlanMode's PostToolUse fires only when the user approved the plan
-      // (a rejection never reaches PostToolUse) — record the approval.
-      if (input.tool_name === "ExitPlanMode") base.planApprovedAt = now;
+      // (a rejection never reaches PostToolUse) — record the approval. The
+      // approval also ends the plan cycle: drop a stale "plan" mode (events
+      // may still carry the pre-approval mode) so the next plan entry is
+      // seen as a fresh transition and clears the badge.
+      if (input.tool_name === "ExitPlanMode") {
+        base.planApprovedAt = now;
+        if (base.permissionMode === "plan") base.permissionMode = null;
+      }
       if (AGENT_TOOLS.has(input.tool_name) && isSyncAgent(input)) {
         removeAgent(base, input);
       } else if (isBackgroundBash(input)) {
@@ -785,7 +795,8 @@ async function main() {
       base.status = "idle";
       base.tool = null;
       base.message = null;
-      base.planApprovedAt = null;
+      // planApprovedAt is not cleared here — the badge stays until a new
+      // plan cycle begins (permission mode transitions back to "plan").
       base.turnStartedAt = null;
       base.turnActive = false;
       base.agents = [];

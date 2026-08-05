@@ -51,7 +51,7 @@ struct SessionState: Codable {
     var host: HostInfo?       // jump-to-session target (optional: older files lack it)
     var env: String?          // isolated-environment name (CLAUDE_CONFIG_DIR); recorded by the hook, not displayed
     var permissionMode: String?  // "plan" | "acceptEdits" | … (optional: older files lack it)
-    var planApprovedAt: Double?  // set when the user approves a plan, cleared at turn end (optional: older hooks lack it)
+    var planApprovedAt: Double?  // set when the user approves a plan, cleared when a new plan cycle starts (optional: older hooks lack it)
 }
 
 enum StateStore {
@@ -765,7 +765,7 @@ final class SessionRowView: NSView {
 
     let glyph = NSTextField(labelWithString: "")
     let projectLabel = NSTextField(labelWithString: "")
-    let planBadge = BadgeLabel(labelWithString: "")     // green check icon after plan approval, until turn end
+    let planBadge = BadgeLabel(labelWithString: "")     // green check icon after plan approval, until a new plan cycle starts
     let modeBadge = BadgeLabel(labelWithString: "")     // permission mode ("PLAN", "BYPASS", …)
     let rightLabel = NSTextField(labelWithString: "")   // elapsed time if available, otherwise status name
     // Last-applied permissionMode (diff guard); nil matches the initial empty
