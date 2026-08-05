@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.11.1
+
+- Session renames made in claude-desktop-switcher (CSW) environments now update on the panel in real time: the app resolves each CSW profile's Desktop session store (via `profile.toml`'s `desktop_user_data_dir`, falling back to the sibling `desktop-data` directory) in addition to the default store, watches all of them with FSEvents, and re-checks the store set every minute to pick up profiles added after launch — previously renames in isolated environments only appeared at the next hook turn boundary
+
 ## v1.11.0
 
 - Plan approval is now visible on the panel: when the user approves a plan in plan mode (`ExitPlanMode` succeeds), a green check icon appears next to the mode badge until the turn ends (tooltip "Plan approved"). Approval-pending display is unchanged (PLAN badge + yellow Waiting), and old hooks / old app versions interoperate cleanly with the new field
