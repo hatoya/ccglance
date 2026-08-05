@@ -643,6 +643,7 @@ async function main() {
     tool: null,
     message: null,
     permissionMode: null,
+    planApprovedAt: null,
     turnStartedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -687,6 +688,7 @@ async function main() {
     case "SessionStart":
       base.status = "idle";
       base.tool = null;
+      base.planApprovedAt = null;
       base.turnStartedAt = null;
       base.turnActive = false;
       base.agents = [];
@@ -710,6 +712,7 @@ async function main() {
       base.message = null;
       if (newTurn) {
         base.turnStartedAt = now;
+        base.planApprovedAt = null;
         base.agents = [];
         base.tasks = [];
       }
@@ -745,6 +748,9 @@ async function main() {
       base.status = "thinking";
       base.tool = null;
       base.message = null;
+      // ExitPlanMode's PostToolUse fires only when the user approved the plan
+      // (a rejection never reaches PostToolUse) — record the approval.
+      if (input.tool_name === "ExitPlanMode") base.planApprovedAt = now;
       if (AGENT_TOOLS.has(input.tool_name) && isSyncAgent(input)) {
         removeAgent(base, input);
       } else if (isBackgroundBash(input)) {
@@ -779,6 +785,7 @@ async function main() {
       base.status = "idle";
       base.tool = null;
       base.message = null;
+      base.planApprovedAt = null;
       base.turnStartedAt = null;
       base.turnActive = false;
       base.agents = [];

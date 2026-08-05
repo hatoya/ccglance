@@ -51,6 +51,7 @@ struct SessionState: Codable {
     var host: HostInfo?       // jump-to-session target (optional: older files lack it)
     var env: String?          // isolated-environment name (CLAUDE_CONFIG_DIR); recorded by the hook, not displayed
     var permissionMode: String?  // "plan" | "acceptEdits" | … (optional: older files lack it)
+    var planApprovedAt: Double?  // set when the user approves a plan, cleared at turn end (optional: older hooks lack it)
 }
 
 enum StateStore {
@@ -300,6 +301,7 @@ enum Theme {
     static let faPullRequest = "\u{E13C}"   // code-pull-request
     static let faMerge = "\u{F387}"         // code-merge
     static let faHand = "\u{F256}"          // hand (waiting for input)
+    static let faCheck = "\u{F00C}"         // check (plan approved)
     static func faFont(size: CGFloat) -> NSFont? {
         NSFont(name: "FontAwesome6Free-Solid", size: size)
     }
@@ -696,14 +698,17 @@ final class SessionRowView: NSView {
 
     let glyph = NSTextField(labelWithString: "")
     let projectLabel = NSTextField(labelWithString: "")
+    let planBadge = BadgeLabel(labelWithString: "")     // green check icon after plan approval, until turn end
     let modeBadge = BadgeLabel(labelWithString: "")     // permission mode ("PLAN", "BYPASS", …)
     let rightLabel = NSTextField(labelWithString: "")   // elapsed time if available, otherwise status name
     // Last-applied permissionMode (diff guard); nil matches the initial empty
     // badge, so the first update is a correct no-op for mode-less sessions
     private var modeRaw: String?
+    private var planShown: Bool?
     // Gap before the right label only while the badge shows — a constant -6
     // on an empty badge would widen the title→time gap for every mode-less row
     private var badgeGap: NSLayoutConstraint?
+    private var planGap: NSLayoutConstraint?
     private let highlight = NSView()
     private let separator = NSBox()
     private let jumpButton = HoverButton()
@@ -740,6 +745,8 @@ final class SessionRowView: NSView {
         modeBadge.alignment = .center
         modeBadge.wantsLayer = true
         modeBadge.layer?.cornerRadius = 3
+        planBadge.font = Self.faGlyphFont ?? NSFont.systemFont(ofSize: 11, weight: .bold)
+        planBadge.alignment = .center
 
         // Long session names must truncate with an ellipsis, never push the
         // right column: the name compresses first, the time/status never does.
@@ -748,12 +755,14 @@ final class SessionRowView: NSView {
         rightLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         modeBadge.setContentCompressionResistancePriority(.required, for: .horizontal)
         modeBadge.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        planBadge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        planBadge.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
         addSubview(separator)
 
-        for v in [glyph, projectLabel, modeBadge, rightLabel] {
+        for v in [glyph, projectLabel, planBadge, modeBadge, rightLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -768,11 +777,12 @@ final class SessionRowView: NSView {
             glyph.widthAnchor.constraint(equalToConstant: 16),
             glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            // [icon][project] ......... [mode badge][time or status name]
+            // [icon][project] ......... [plan badge][mode badge][time or status name]
             projectLabel.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
             projectLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            projectLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeBadge.leadingAnchor, constant: -8),
+            projectLabel.trailingAnchor.constraint(lessThanOrEqualTo: planBadge.leadingAnchor, constant: -8),
 
+            planBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
             modeBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             rightLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
@@ -785,6 +795,8 @@ final class SessionRowView: NSView {
         ])
         badgeGap = modeBadge.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor)
         badgeGap?.isActive = true
+        planGap = planBadge.trailingAnchor.constraint(equalTo: modeBadge.leadingAnchor)
+        planGap?.isActive = true
 
         // Hover-revealed jump button ("Open in <app>"). It swaps in for the
         // right label (same slot), so the row keeps its fixed height; the
@@ -833,6 +845,7 @@ final class SessionRowView: NSView {
         jumpButton.isHidden = !show
         rightLabel.isHidden = show
         modeBadge.isHidden = show
+        planBadge.isHidden = show
         titleClearsButton?.isActive = show
     }
 
@@ -884,6 +897,17 @@ final class SessionRowView: NSView {
             modeBadge.toolTip = badge.text.isEmpty ? nil : "Permission mode: \(s.permissionMode ?? "")"
             badgeGap?.constant = badge.text.isEmpty ? 0 : -6
             modeBadge.invalidateIntrinsicContentSize()
+        }
+
+        let approved = s.planApprovedAt != nil
+        if approved != planShown {
+            planShown = approved
+            planBadge.stringValue = approved
+                ? (Self.faGlyphFont != nil ? Theme.faCheck : "✓") : ""
+            planBadge.textColor = Theme.prOpen
+            planBadge.toolTip = approved ? "Plan approved" : nil
+            planGap?.constant = approved ? -6 : 0
+            planBadge.invalidateIntrinsicContentSize()
         }
 
         switch s.status {
