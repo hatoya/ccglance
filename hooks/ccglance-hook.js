@@ -596,6 +596,7 @@ async function main() {
     status: "idle",
     tool: null,
     message: null,
+    permissionMode: null,
     turnStartedAt: null,
     createdAt: now,
     updatedAt: now,
@@ -605,6 +606,17 @@ async function main() {
   if (typeof input.cwd === "string" && input.cwd.length > 0) {
     base.cwd = input.cwd;
     base.project = projectFromCwd(input.cwd) || base.project;
+  }
+  // Trust the mode only when the event carries it — older Claude Code
+  // versions omit permission_mode, and unwritten fields persist. The length
+  // cap keeps a malformed value from bloating the state file (and the
+  // tooltip it ends up in).
+  if (
+    typeof input.permission_mode === "string" &&
+    input.permission_mode.length > 0 &&
+    input.permission_mode.length <= 64
+  ) {
+    base.permissionMode = input.permission_mode;
   }
   if (title) base.title = title;
   // Captured once per session (unwritten fields persist across events), which

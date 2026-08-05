@@ -49,6 +49,7 @@ struct SessionState: Codable {
     var tasks: [BackgroundTask]?  // running background commands (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
     var host: HostInfo?       // jump-to-session target (optional: older files lack it)
+    var permissionMode: String?  // "plan" | "acceptEdits" | … (optional: older files lack it)
 }
 
 enum StateStore {
@@ -290,6 +291,9 @@ enum Theme {
     static let prMerged = hex(0xA371F7)
     static let prClosed = hex(0xF85149)
     static let prDraft = NSColor.tertiaryLabelColor
+
+    // Permission-mode badge (plan); other modes reuse the colors above
+    static let modePlan = hex(0x58A6FF)
 
     // Font Awesome 6 Free Solid glyphs (font bundled in Resources)
     static let faPullRequest = "\u{E13C}"   // code-pull-request
@@ -661,12 +665,29 @@ final class HoverButton: NSButton {
 
 // MARK: - Session row view (table-style)
 
+/// Label with built-in horizontal padding that collapses to zero width when
+/// empty — hides the badge without toggling constraints.
+final class BadgeLabel: NSTextField {
+    override var intrinsicContentSize: NSSize {
+        var s = super.intrinsicContentSize
+        if !stringValue.isEmpty { s.width += 10; s.height += 2 }
+        return s
+    }
+}
+
 final class SessionRowView: NSView {
     static let height: CGFloat = 28
 
     let glyph = NSTextField(labelWithString: "")
     let projectLabel = NSTextField(labelWithString: "")
+    let modeBadge = BadgeLabel(labelWithString: "")     // permission mode ("PLAN", "BYPASS", …)
     let rightLabel = NSTextField(labelWithString: "")   // elapsed time if available, otherwise status name
+    // Last-applied permissionMode (diff guard); nil matches the initial empty
+    // badge, so the first update is a correct no-op for mode-less sessions
+    private var modeRaw: String?
+    // Gap before the right label only while the badge shows — a constant -6
+    // on an empty badge would widen the title→time gap for every mode-less row
+    private var badgeGap: NSLayoutConstraint?
     private let highlight = NSView()
     private let separator = NSBox()
     private let jumpButton = HoverButton()
@@ -699,18 +720,24 @@ final class SessionRowView: NSView {
         projectLabel.lineBreakMode = .byTruncatingTail
         rightLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         rightLabel.alignment = .right
+        modeBadge.font = NSFont.systemFont(ofSize: 9, weight: .bold)
+        modeBadge.alignment = .center
+        modeBadge.wantsLayer = true
+        modeBadge.layer?.cornerRadius = 3
 
         // Long session names must truncate with an ellipsis, never push the
         // right column: the name compresses first, the time/status never does.
         projectLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         rightLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         rightLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        modeBadge.setContentCompressionResistancePriority(.required, for: .horizontal)
+        modeBadge.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
         addSubview(separator)
 
-        for v in [glyph, projectLabel, rightLabel] {
+        for v in [glyph, projectLabel, modeBadge, rightLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -725,10 +752,12 @@ final class SessionRowView: NSView {
             glyph.widthAnchor.constraint(equalToConstant: 16),
             glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            // [icon][project] ......... [time or status name]
+            // [icon][project] ......... [mode badge][time or status name]
             projectLabel.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
             projectLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            projectLabel.trailingAnchor.constraint(lessThanOrEqualTo: rightLabel.leadingAnchor, constant: -8),
+            projectLabel.trailingAnchor.constraint(lessThanOrEqualTo: modeBadge.leadingAnchor, constant: -8),
+
+            modeBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             rightLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             rightLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -738,6 +767,8 @@ final class SessionRowView: NSView {
             separator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        badgeGap = modeBadge.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor)
+        badgeGap?.isActive = true
 
         // Hover-revealed jump button ("Open in <app>"). It swaps in for the
         // right label (same slot), so the row keeps its fixed height; the
@@ -785,6 +816,7 @@ final class SessionRowView: NSView {
         let show = hovering && jumpTarget != nil
         jumpButton.isHidden = !show
         rightLabel.isHidden = show
+        modeBadge.isHidden = show
         titleClearsButton?.isActive = show
     }
 
@@ -824,6 +856,18 @@ final class SessionRowView: NSView {
             guard let start = s.turnStartedAt else { return "" }
             let sec = max(0, Int(now - start))
             return sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s"
+        }
+
+        if s.permissionMode != modeRaw {
+            modeRaw = s.permissionMode
+            let badge = Self.modeBadgeInfo(s.permissionMode)
+            modeBadge.stringValue = badge.text
+            modeBadge.textColor = badge.color
+            modeBadge.layer?.backgroundColor =
+                badge.text.isEmpty ? nil : badge.color.withAlphaComponent(0.18).cgColor
+            modeBadge.toolTip = badge.text.isEmpty ? nil : "Permission mode: \(s.permissionMode ?? "")"
+            badgeGap?.constant = badge.text.isEmpty ? 0 : -6
+            modeBadge.invalidateIntrinsicContentSize()
         }
 
         switch s.status {
@@ -880,6 +924,21 @@ final class SessionRowView: NSView {
     private func setGlyph(font: NSFont, tooltip: String?) {
         if glyph.font != font { glyph.font = font }
         if glyph.toolTip != tooltip { glyph.toolTip = tooltip }
+    }
+
+    /// Badge text and color for the session's permission mode. Default (and
+    /// missing — older hook versions) stays blank; unknown future modes show
+    /// neutrally rather than disappearing.
+    private static func modeBadgeInfo(_ mode: String?) -> (text: String, color: NSColor) {
+        switch mode {
+        case nil, "default": return ("", .clear)
+        case "plan": return ("PLAN", Theme.modePlan)
+        case "acceptEdits": return ("ACCEPT", Theme.prOpen)
+        case "auto": return ("AUTO", Theme.yellow)
+        case "dontAsk": return ("NO ASK", Theme.orange)
+        case "bypassPermissions": return ("BYPASS", Theme.prClosed)
+        case let m?: return (String(m.uppercased().prefix(8)), Theme.idle)
+        }
     }
 
     /// Icon, color and tooltip for the session's PR state; nil falls back to
