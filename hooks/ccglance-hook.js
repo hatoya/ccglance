@@ -137,14 +137,45 @@ async function acquireLock(sessionId) {
 //   ~/Library/Application Support/Claude/claude-code-sessions/<ws>/<x>/local_<id>.json
 // with fields { title, cliSessionId } — cliSessionId matches the hook's
 // session_id. (See anthropics/claude-code#64304 for the on-disk analysis.)
+// Isolated environments (claude-desktop-switcher) give the Desktop app its own
+// user-data dir, so titles edited there never land in the default store. The
+// hook runs inside the environment, so CLAUDE_CONFIG_DIR (the profile's
+// cli-data dir) locates the sibling profile.toml, whose desktop_user_data_dir
+// records where that store lives.
+function desktopStoreRoots() {
+  const roots = [
+    path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
+  ];
+  const dir = process.env.CLAUDE_CONFIG_DIR;
+  if (typeof dir === "string" && dir.trim()) {
+    const resolved = path.resolve(dir.trim());
+    if (resolved === path.join(os.homedir(), ".claude")) return roots;
+    const profileDir = path.dirname(resolved);
+    let dataDir = null;
+    try {
+      const toml = fs.readFileSync(path.join(profileDir, "profile.toml"), "utf8");
+      const m = toml.match(/^\s*desktop_user_data_dir\s*=\s*"([^"]+)"/m);
+      if (m) {
+        let v = m[1];
+        if (v.startsWith("~/")) v = path.join(os.homedir(), v.slice(2));
+        if (!path.isAbsolute(v)) v = path.join(profileDir, v);
+        // A stale/bad value must fall through to the sibling guess below
+        if (fs.existsSync(v)) dataDir = v;
+      }
+    } catch {}
+    if (!dataDir) {
+      const fallback = path.join(profileDir, "desktop-data");
+      if (fs.existsSync(fallback)) dataDir = fallback;
+    }
+    if (dataDir) {
+      const root = path.join(dataDir, "claude-code-sessions");
+      if (!roots.includes(root)) roots.push(root);
+    }
+  }
+  return roots;
+}
+
 function desktopTitle(sessionId) {
-  const root = path.join(
-    os.homedir(),
-    "Library",
-    "Application Support",
-    "Claude",
-    "claude-code-sessions"
-  );
   let best = null; // { title, mtime }
   function walk(dir, depth) {
     let entries;
@@ -167,14 +198,15 @@ function desktopTitle(sessionId) {
         const ids = [j.cliSessionId, j.sessionId, j.id].filter(Boolean);
         const bridged = Array.isArray(j.bridgeSessionIds) ? j.bridgeSessionIds : [];
         if (!ids.includes(sessionId) && !bridged.includes(sessionId)) continue;
-        if (typeof j.title === "string" && j.title.trim()) {
+        const t = cleanLabel(j.title);
+        if (t) {
           const mtime = fs.statSync(p).mtimeMs;
-          if (!best || mtime > best.mtime) best = { title: j.title.trim(), mtime };
+          if (!best || mtime > best.mtime) best = { title: t, mtime };
         }
       }
     }
   }
-  walk(root, 0);
+  for (const root of desktopStoreRoots()) walk(root, 0);
   return best ? best.title : null;
 }
 
