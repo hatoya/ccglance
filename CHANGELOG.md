@@ -2,6 +2,13 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.10.0
+
+- Sessions running in claude-desktop-switcher (CSW) environments isolated via `CLAUDE_CONFIG_DIR` now show up on the panel: install.js/uninstall.js register hooks into each CSW profile's `cli-data/settings.json` and `$CLAUDE_CONFIG_DIR/settings.json` as well (idempotent, existing hooks preserved with backups created on change, broken environments skipped with a warning), and the app re-runs the installer when a new profile appears (one stat on `profiles/` every 60 seconds)
+- Session rows now show a small permission-mode badge next to the elapsed time: PLAN (blue) / ACCEPT (green) / AUTO (yellow) / NO ASK (orange) / BYPASS (red). The `default` mode and state files from older hooks show no badge, so only deviating modes stand out
+- Session renames made in a CSW environment's Claude Desktop are now picked up: the hook resolves the environment's own Desktop store from `profile.toml`'s `desktop_user_data_dir` (falling back to the sibling `desktop-data` directory) and scans it alongside the default store
+- Removed the `$ ` prefix from background shell command rows and re-recorded the README demo GIF
+
 ## v1.9.1
 
 - Background tasks started by the `Monitor` tool (CI watches, agent-completion waits) now show up as child rows under their session — previously these were the "sometimes a background task is missing" cases. Monitor rows show a label only (description, watch condition, or program name) with no `$` prefix, and raw commands stay out of the session JSON as before
