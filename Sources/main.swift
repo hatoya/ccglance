@@ -301,7 +301,7 @@ enum Theme {
     static let faPullRequest = "\u{E13C}"   // code-pull-request
     static let faMerge = "\u{F387}"         // code-merge
     static let faHand = "\u{F256}"          // hand (waiting for input)
-    static let faCircleCheck = "\u{F058}"   // circle-check (plan approved)
+    static let faCheck = "\u{F00C}"         // check (plan approved)
     static func faFont(size: CGFloat) -> NSFont? {
         NSFont(name: "FontAwesome6Free-Solid", size: size)
     }
@@ -888,7 +888,7 @@ final class SessionRowView: NSView {
         if approved != planShown {
             planShown = approved
             planBadge.stringValue = approved
-                ? (Self.faGlyphFont != nil ? Theme.faCircleCheck : "✓") : ""
+                ? (Self.faGlyphFont != nil ? Theme.faCheck : "✓") : ""
             planBadge.textColor = Theme.prOpen
             planBadge.toolTip = approved ? "Plan approved" : nil
             planGap?.constant = approved ? -6 : 0
