@@ -31,7 +31,7 @@ brew install --cask hatoya/tap/ccglance
 
 Either way, launch the app once — on first launch it wires up the Claude Code hooks automatically (appends to `~/.claude/settings.json`; existing hooks are left untouched, and a backup is saved as `settings.json.bak-ccglance`). Then start a new Claude Code session — the panel appears and tracks it.
 
-Isolated environments created with [claude-desktop-switcher](https://matsumotory.github.io/claude-desktop-switcher/) are picked up too: the installer also registers the hooks into each profile's `cli-data/settings.json`, and their sessions show up under a `project · environment` group header. Environments created while the app is running are wired up within a minute (their very first session may not appear; the next one will).
+Isolated environments created with [claude-desktop-switcher](https://matsumotory.github.io/claude-desktop-switcher/) are picked up too: the installer also registers the hooks into each profile's `cli-data/settings.json`, so their sessions show up in the panel like any other. Environments created while the app is running are wired up within a minute (their very first session may not appear; the next one will).
 
 > **If Claude Code is already open, restart it (or start a new session) once.** Hooks are loaded when a session starts.
 

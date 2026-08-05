@@ -49,7 +49,7 @@ struct SessionState: Codable {
     var tasks: [BackgroundTask]?  // running background commands (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
     var host: HostInfo?       // jump-to-session target (optional: older files lack it)
-    var env: String?          // isolated-environment name (CLAUDE_CONFIG_DIR); absent for the default env
+    var env: String?          // isolated-environment name (CLAUDE_CONFIG_DIR); recorded by the hook, not displayed
 }
 
 enum StateStore {
@@ -1439,14 +1439,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        // Group sessions by project (directory name); sessions from an isolated
-        // environment (claude-desktop-switcher etc.) get their own group so the
-        // header shows which environment they run in
-        let grouped = Dictionary(grouping: sessions) { s -> String in
-            let project = s.project ?? "\u{2014}"
-            guard let env = s.env, !env.isEmpty else { return project }
-            return "\(project) \u{00B7} \(env)"
-        }
+        // Group sessions by project (directory name)
+        let grouped = Dictionary(grouping: sessions) { $0.project ?? "\u{2014}" }
             .map { (name: $0.key, sessions: $0.value) }
             .sorted { $0.name.lowercased() < $1.name.lowercased() }
 
