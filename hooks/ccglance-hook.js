@@ -258,6 +258,20 @@ function captureHost() {
   return host;
 }
 
+// Isolated-environment name for the panel's group header. claude-desktop-switcher
+// (and similar tools) point Claude Code at a separate config dir via
+// CLAUDE_CONFIG_DIR; the default environment carries no name at all.
+function envName() {
+  const dir = process.env.CLAUDE_CONFIG_DIR;
+  if (typeof dir !== "string" || !dir.trim()) return null;
+  const resolved = path.resolve(dir.trim());
+  if (resolved === path.join(os.homedir(), ".claude")) return null;
+  const m = resolved.match(/[\/\\]\.context-switcher-claude[\/\\]profiles[\/\\]([^\/\\]+)[\/\\]cli-data[\/\\]?$/);
+  if (m) return cleanLabel(m[1]);
+  const base = path.basename(resolved);
+  return cleanLabel(base === "cli-data" ? path.basename(path.dirname(resolved)) : base);
+}
+
 // Running-subagent tracking: PreToolUse on an agent tool pushes an entry.
 // PostToolUse removes the matching one — but only for synchronous agents.
 // tool_use_id (present on both events in newer builds) is the correlation key,
@@ -613,6 +627,9 @@ async function main() {
   // file that survived a crash.
   if (!base.host || input.hook_event_name === "SessionStart") {
     base.host = captureHost();
+    const env = envName();
+    if (env) base.env = env;
+    else delete base.env;
   }
   base.updatedAt = now;
 

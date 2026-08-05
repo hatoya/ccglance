@@ -82,8 +82,8 @@ Sources/
 └── CrabFrames.swift     # アニメーションフレーム定義
 hooks/
 ├── ccglance-hook.js     # ライフサイクルイベントをstdinで受け取りセッション状態JSONを書き込む
-├── install.js           # ~/.claude/settings.json へのhook登録（既存hooksは保持、バックアップ作成）
-└── uninstall.js         # ccglanceのhooksのみを削除
+├── install.js           # ~/.claude/settings.json とCSWプロファイル等へのhook登録（既存hooksは保持、バックアップ作成）
+└── uninstall.js         # 全登録先からccglanceのhooksのみを削除
 build.sh                 # ビルドスクリプト（VERSIONが唯一のバージョン情報源）
 icon/                    # アプリアイコン
 docs/                    # README用アセット（demo.gif、ダウンロードボタン画像等）
@@ -137,5 +137,5 @@ docs/                    # README用アセット（demo.gif、ダウンロード
 
 - パネルはフォーカスを奪わない設計（クリックしても作業中アプリからフォーカスを奪わない）を壊さないこと
 - セッションファイルは12時間更新が無いと自動削除される（クラッシュしたセッションの掃除）
-- hooksの登録先はユーザーの `~/.claude/settings.json`。install.js/uninstall.jsはccglance以外のhooksに影響を与えないこと
+- hooksの登録先はユーザーの `~/.claude/settings.json`、claude-desktop-switcherの各プロファイル（`~/.context-switcher-claude/profiles/*/cli-data/settings.json`）、および `CLAUDE_CONFIG_DIR` が指す環境。install.js/uninstall.jsはccglance以外のhooksに影響を与えないこと
 - アプリ内アップデーターはzipのSHA-256を `.sha256` アセットと照合するため、リリースには両ファイルを必ずセットで添付する

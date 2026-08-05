@@ -31,6 +31,8 @@ brew install --cask hatoya/tap/ccglance
 
 Either way, launch the app once — on first launch it wires up the Claude Code hooks automatically (appends to `~/.claude/settings.json`; existing hooks are left untouched, and a backup is saved as `settings.json.bak-ccglance`). Then start a new Claude Code session — the panel appears and tracks it.
 
+Isolated environments created with [claude-desktop-switcher](https://matsumotory.github.io/claude-desktop-switcher/) are picked up too: the installer also registers the hooks into each profile's `cli-data/settings.json`, and their sessions show up under a `project · environment` group header. Environments created while the app is running are wired up within a minute (their very first session may not appear; the next one will).
+
 > **If Claude Code is already open, restart it (or start a new session) once.** Hooks are loaded when a session starts.
 
 > Releases are Developer ID signed and notarized, so Gatekeeper runs them without any extra approval steps.
@@ -42,6 +44,8 @@ If the automatic hook setup doesn't work, run it manually:
 ```bash
 node "/Applications/ccglance.app/Contents/Resources/install.js"
 ```
+
+For a custom isolated environment (any tool that sets `CLAUDE_CONFIG_DIR`), run the same command from a shell where that variable is set — the hooks get registered into that environment's `settings.json` as well.
 
 ### Build from source
 
@@ -122,7 +126,7 @@ Release procedure (for maintainers):
 node "/Applications/ccglance.app/Contents/Resources/uninstall.js"
 ```
 
-Then move the app to the Trash (or, for Homebrew installs, run `brew uninstall --cask ccglance` instead). Only ccglance's hooks are removed; any other hooks are left intact.
+Then move the app to the Trash (or, for Homebrew installs, run `brew uninstall --cask ccglance` instead). Only ccglance's hooks are removed — from `~/.claude/settings.json` and from any claude-desktop-switcher profiles; any other hooks are left intact. If you registered the hooks into a custom `CLAUDE_CONFIG_DIR` environment, run the uninstaller from a shell where that variable is set so they get removed there too.
 
 ## Built with Claude / not affiliated
 
