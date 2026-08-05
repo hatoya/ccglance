@@ -669,6 +669,21 @@ final class HoverButton: NSButton {
 /// Label with built-in horizontal padding that collapses to zero width when
 /// empty — hides the badge without toggling constraints.
 final class BadgeLabel: NSTextField {
+    // NSTextFieldCell top-aligns its text, so the extra height added below
+    // would otherwise all become bottom padding; center it vertically.
+    private final class CenteredCell: NSTextFieldCell {
+        override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+            var rect = cellFrame
+            let textHeight = cellSize(forBounds: cellFrame).height
+            rect.origin.y += (cellFrame.height - textHeight) / 2
+            rect.size.height = textHeight
+            super.drawInterior(withFrame: rect, in: controlView)
+        }
+    }
+    override class var cellClass: AnyClass? {
+        get { CenteredCell.self }
+        set {}
+    }
     override var intrinsicContentSize: NSSize {
         var s = super.intrinsicContentSize
         if !stringValue.isEmpty { s.width += 10; s.height += 2 }
