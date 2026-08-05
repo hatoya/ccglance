@@ -49,6 +49,7 @@ struct SessionState: Codable {
     var tasks: [BackgroundTask]?  // running background commands (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
     var host: HostInfo?       // jump-to-session target (optional: older files lack it)
+    var env: String?          // isolated-environment name (CLAUDE_CONFIG_DIR); recorded by the hook, not displayed
 }
 
 enum StateStore {
@@ -1182,6 +1183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isRefreshingUntitled = false
     private var prFetchAttempts: [String: Double] = [:]   // sessionId → last --fetch-pr spawn
     private let titleWatcher = TitleStoreWatcher()
+    private var lastProfilesMtime: Date?   // claude-desktop-switcher profiles dir, for hook catch-up
+    private var installerInFlight = false
 
     private let defaultWidth: CGFloat = 300
     private let minWidth: CGFloat = 220
@@ -1202,6 +1205,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Run on every launch: idempotent, and re-copies the hook script so the
         // deployed copy in ~/.claude/ccglance/hooks/ always matches this build.
         runInstaller()
+        // Record the profiles-dir baseline now, not on the first 60s tick — a
+        // profile created in that window would otherwise be absorbed into the
+        // baseline and never get its hooks.
+        catchUpNewEnvironments()
         buildPanel()
 
         // Entering another app's full-screen space drops the panel behind it —
@@ -1405,6 +1412,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // show up without waiting for the next turn boundary; sessions idle
         // for a while are throttled down inside refreshPRStatuses()
         if tickCount % 150 == 0 { refreshPRStatuses() }
+
+        // Hooks for claude-desktop-switcher environments created while the app
+        // is running: watch the profiles dir mtime (changes on entry add/remove)
+        // and re-run the idempotent installer. One stat per minute, none for
+        // non-CSW users (the dir doesn't exist).
+        if tickCount % 600 == 0 { catchUpNewEnvironments() }
 
         // Fresh sessions start without a title (Claude Desktop generates it a
         // few seconds after the first prompt, but hooks only re-resolve it on
@@ -1626,6 +1639,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         try? proc.run()
         proc.waitUntilExit()
         return proc.terminationStatus == 0
+    }
+
+    /// Re-run the installer when a claude-desktop-switcher profile appears or
+    /// disappears, so environments created after launch get the hooks without
+    /// waiting for an app restart. The launch-time run covers everything older;
+    /// the first tick only records the baseline mtime.
+    private func catchUpNewEnvironments() {
+        let profilesDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".context-switcher-claude/profiles").path
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: profilesDir),
+              let mtime = attrs[.modificationDate] as? Date else { return }
+        guard let last = lastProfilesMtime else {
+            lastProfilesMtime = mtime
+            return
+        }
+        guard mtime != last, !installerInFlight else { return }
+        installerInFlight = true
+        lastProfilesMtime = mtime
+        // runInstaller waits for the process; keep that off the 0.1s tick
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.runInstaller()
+            DispatchQueue.main.async { self?.installerInFlight = false }
+        }
     }
 
     /// Re-fetch PR status for idle sessions via the bundled hook's --fetch-pr
