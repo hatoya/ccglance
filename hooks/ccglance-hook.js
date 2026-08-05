@@ -785,7 +785,9 @@ async function main() {
       base.status = "idle";
       base.tool = null;
       base.message = null;
-      base.planApprovedAt = null;
+      // planApprovedAt survives the turn end on purpose: the badge keeps
+      // marking the session as plan-approved while idle, until the next
+      // turn starts (UserPromptSubmit) or the session restarts.
       base.turnStartedAt = null;
       base.turnActive = false;
       base.agents = [];
