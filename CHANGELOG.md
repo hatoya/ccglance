@@ -2,6 +2,11 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.11.0
+
+- Plan approval is now visible on the panel: when the user approves a plan in plan mode (`ExitPlanMode` succeeds), a green check icon appears next to the mode badge until the turn ends (tooltip "Plan approved"). Approval-pending display is unchanged (PLAN badge + yellow Waiting), and old hooks / old app versions interoperate cleanly with the new field
+- Fixed the mode badge text sitting flush with the badge top: the label now draws vertically centered, so the padding above and below the text is even
+
 ## v1.10.0
 
 - Sessions running in claude-desktop-switcher (CSW) environments isolated via `CLAUDE_CONFIG_DIR` now show up on the panel: install.js/uninstall.js register hooks into each CSW profile's `cli-data/settings.json` and `$CLAUDE_CONFIG_DIR/settings.json` as well (idempotent, existing hooks preserved with backups created on change, broken environments skipped with a warning), and the app re-runs the installer when a new profile appears (one stat on `profiles/` every 60 seconds)
