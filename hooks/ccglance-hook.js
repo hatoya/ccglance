@@ -28,6 +28,9 @@ const TOOL_LABELS = {
 
 // Subagent-spawning tools ("Task" classically, "Agent" in newer builds)
 const AGENT_TOOLS = new Set(["Task", "Agent"]);
+// Tools that stop a background command ("KillShell" classically, "TaskStop"
+// in newer builds)
+const KILL_TOOLS = new Set(["TaskStop", "KillShell", "KillTask"]);
 const MAX_AGENTS = 10;
 const MAX_TASKS = 10;
 
@@ -312,7 +315,9 @@ function envName() {
 // A background agent's tool call returns a task id immediately, so its
 // PostToolUse fires while the agent is still running: honoring it would erase
 // the row seconds after it appeared. Those entries are dropped by reapFinished
-// once the transcript reports them done, or by the turn-boundary reset.
+// once the transcript reports them done — background work routinely outlives
+// the turn that launched it, so turn boundaries keep those rows (see
+// keepBackgroundRows) and only sweep entries the reap could never match.
 function cleanLabel(s) {
   if (typeof s !== "string") return null;
   const d = s.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
@@ -331,15 +336,23 @@ function isSyncAgent(input) {
   return input.tool_name === "Task";
 }
 
-function pushAgent(base, input, now, description) {
+function pushAgent(base, input, now, description, extra) {
   const ti = input.tool_input || {};
   const agents = Array.isArray(base.agents) ? base.agents : [];
-  agents.push({
-    id: typeof input.tool_use_id === "string" ? input.tool_use_id : null,
-    description: description !== undefined ? description : agentDescription(input),
-    type: typeof ti.subagent_type === "string" ? ti.subagent_type : null,
-    startedAt: now,
-  });
+  agents.push(
+    Object.assign(
+      {
+        id: typeof input.tool_use_id === "string" ? input.tool_use_id : null,
+        description: description !== undefined ? description : agentDescription(input),
+        type: typeof ti.subagent_type === "string" ? ti.subagent_type : null,
+        // Background agents outlive the turn that launched them; only these
+        // survive the turn-boundary sweep (keepBackgroundRows)
+        bg: !isSyncAgent(input),
+        startedAt: now,
+      },
+      extra
+    )
+  );
   base.agents = agents.slice(-MAX_AGENTS);
 }
 
@@ -356,7 +369,7 @@ function removeAgent(base, input) {
   // No match: the PreToolUse was never recorded (lost to the unlocked
   // fallback, or reset by a turn boundary). Removing an arbitrary entry would
   // hide a different agent that is still running — leave the list alone and
-  // let the Stop-time reset clear any leftovers.
+  // let the turn-boundary sweep clear any sync-agent leftovers.
   if (i < 0) return;
   base.agents.splice(i, 1);
 }
@@ -364,17 +377,19 @@ function removeAgent(base, input) {
 // Background shell commands (Bash with run_in_background). Like a background
 // agent, the tool call returns as soon as the command is detached, so its
 // PostToolUse says nothing about the command still running — the entry is only
-// dropped when the transcript reports it finished (see reapFinished).
+// dropped when the transcript reports it finished (see reapFinished), or when
+// the PostToolUse response carries no task id (the command ran to completion
+// synchronously — no notification will ever come for it).
 function isBackgroundBash(input) {
   return input.tool_name === "Bash" && (input.tool_input || {}).run_in_background === true;
 }
 
 // Monitor watches (CI runs, agent completion, file conditions) are background
 // tasks too: the tool call returns "Monitor started" immediately and the watch
-// keeps running. Its task id only appears in the response text (never as a
-// structured field), so the entry is matched by tool_use_id alone — which is
-// also what keeps per-event notifications (task-id only) from reaping a
-// monitor that is still running.
+// keeps running. The reap matches the entry by tool_use_id alone — its task id
+// (response taskId, stored as monitorId for kill matching) must stay out of
+// the taskId field, because per-event notifications name the task id while
+// the watch is still running and would reap a live row.
 function isMonitor(input) {
   return input.tool_name === "Monitor";
 }
@@ -412,25 +427,47 @@ function pushTask(base, input, now, extra) {
 }
 
 // The completion notification names the command by its shell id, which only the
-// tool response carries — record it so both ids can be matched later.
-function recordTaskId(base, input) {
-  if (!Array.isArray(base.tasks) || base.tasks.length === 0) return;
-  const res = input.tool_response;
-  const taskId = res && typeof res === "object" ? res.backgroundTaskId : null;
-  if (typeof taskId !== "string" || !taskId) return;
+// tool response carries — record it so both ids can be matched later. When no
+// entry matches (the PreToolUse was lost to the unlocked fallback, or the
+// harness backgrounded a foreground command mid-run), the response is the only
+// evidence the command exists — add the row here instead of losing it.
+function attachTaskId(base, input, now, taskId) {
+  const tasks = Array.isArray(base.tasks) ? base.tasks : [];
   const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
-  let entry = id ? base.tasks.find((t) => t && t.id === id) : null;
+  let entry = id ? tasks.find((t) => t && t.id === id) : null;
   if (!entry && !id) {
     // No correlation key: the newest entry still missing a taskId is the one
-    // that just started (entries are pushed in call order)
-    for (let i = base.tasks.length - 1; i >= 0; i--) {
-      if (base.tasks[i] && !base.tasks[i].taskId) {
-        entry = base.tasks[i];
+    // that just started (entries are pushed in call order). Monitor rows
+    // never carry a taskId — they must not soak up a bash command's id.
+    for (let i = tasks.length - 1; i >= 0; i--) {
+      if (tasks[i] && !tasks[i].taskId && tasks[i].kind !== "monitor") {
+        entry = tasks[i];
         break;
       }
     }
   }
   if (entry) entry.taskId = taskId;
+  else pushTask(base, input, now, { taskId });
+}
+
+// A bg-requested command whose response carries no task id never detached —
+// it finished (or failed) synchronously, so no completion notification will
+// ever reap its row.
+function removeTask(base, input) {
+  if (!Array.isArray(base.tasks) || base.tasks.length === 0) return;
+  const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
+  let i = id ? base.tasks.findIndex((t) => t && t.id === id) : -1;
+  if (i < 0 && !id) {
+    // Same fallback as attachTaskId — and the same monitor guard: removing
+    // the newest taskId-less row must never take out a live watch
+    for (let j = base.tasks.length - 1; j >= 0; j--) {
+      if (base.tasks[j] && !base.tasks[j].taskId && base.tasks[j].kind !== "monitor") {
+        i = j;
+        break;
+      }
+    }
+  }
+  if (i >= 0) base.tasks.splice(i, 1);
 }
 
 // Background work reports completion only in the transcript: the harness
@@ -440,24 +477,26 @@ function recordTaskId(base, input) {
 // transcript tail and drops what has finished. The window has to be generous —
 // single transcript lines routinely run past 100KB (tool results, agent
 // transcripts), so a small tail would push notifications out of view within a
-// few tool calls. A notification that scrolls past it is only a missed early
-// removal: the turn-boundary reset still clears the row.
+// few tool calls. Turn boundaries scan a much larger window: they run once per
+// turn, and are the last chance to catch a notification that scrolled past the
+// per-event tail before a kept row goes stale.
 const TAIL_BYTES = 512 * 1024;
+const TAIL_BYTES_TURN = 4 * 1024 * 1024;
 // The ids sit at the top of the block; its <result> can run for pages
 const BLOCK_HEAD = 600;
 
-function finishedIds(transcriptPath) {
+function finishedIds(transcriptPath, tailBytes) {
   const ids = new Set();
   if (typeof transcriptPath !== "string" || !transcriptPath) return ids;
   try {
     const st = fs.statSync(transcriptPath);
     let data;
-    if (st.size <= TAIL_BYTES) {
+    if (st.size <= tailBytes) {
       data = fs.readFileSync(transcriptPath, "utf8");
     } else {
       const fd = fs.openSync(transcriptPath, "r");
-      const buf = Buffer.alloc(TAIL_BYTES);
-      fs.readSync(fd, buf, 0, TAIL_BYTES, st.size - TAIL_BYTES);
+      const buf = Buffer.alloc(tailBytes);
+      fs.readSync(fd, buf, 0, tailBytes, st.size - tailBytes);
       fs.closeSync(fd);
       data = buf.toString("utf8");
     }
@@ -481,11 +520,11 @@ function finishedIds(transcriptPath) {
   return ids;
 }
 
-function reapFinished(base, transcriptPath) {
+function reapFinished(base, transcriptPath, tailBytes) {
   const agents = Array.isArray(base.agents) ? base.agents : [];
   const tasks = Array.isArray(base.tasks) ? base.tasks : [];
   if (agents.length === 0 && tasks.length === 0) return;
-  const done = finishedIds(transcriptPath);
+  const done = finishedIds(transcriptPath, tailBytes);
   if (done.size === 0) return;
   if (agents.length > 0) {
     base.agents = agents.filter((a) => !(a && a.id && done.has(a.id)));
@@ -494,6 +533,24 @@ function reapFinished(base, transcriptPath) {
     base.tasks = tasks.filter(
       (t) => !(t && ((t.id && done.has(t.id)) || (t.taskId && done.has(t.taskId))))
     );
+  }
+}
+
+// Turn-boundary sweep. Background work keeps running after its turn ends (a
+// dev server launched with run_in_background, a Monitor watch, a background
+// agent), so clearing the lists here would blank the panel while the work is
+// still live — that was exactly the "background task not shown" bug. Instead
+// keep every row the notification reap can still match, and drop only the
+// ones it can't: sync-agent strays (their PostToolUse removal was lost) and
+// entries with no usable id, which would otherwise be stuck until SessionEnd.
+// Bash rows must have a confirmed taskId — a bg request that never detached
+// gets no notification, so an id-only row could be such a stray.
+function keepBackgroundRows(base) {
+  if (Array.isArray(base.agents)) {
+    base.agents = base.agents.filter((a) => a && a.bg === true && a.id);
+  }
+  if (Array.isArray(base.tasks)) {
+    base.tasks = base.tasks.filter((t) => t && (t.taskId || (t.kind === "monitor" && t.id)));
   }
 }
 
@@ -684,10 +741,14 @@ async function main() {
   }
   base.updatedAt = now;
 
-  // Drop rows for background work that has finished since the last event. The
-  // turn-boundary events below clear both lists outright, so they skip it.
+  // Drop rows for background work that has finished since the last event.
+  // Turn boundaries get the wide scan: rows survive them now (see
+  // keepBackgroundRows), so this is the last cheap moment to catch a
+  // notification that already scrolled past the per-event tail.
   if (ev === "PreToolUse" || ev === "PostToolUse" || ev === "Notification") {
-    reapFinished(base, input.transcript_path);
+    reapFinished(base, input.transcript_path, TAIL_BYTES);
+  } else if (ev === "Stop" || ev === "UserPromptSubmit") {
+    reapFinished(base, input.transcript_path, TAIL_BYTES_TURN);
   }
 
   switch (input.hook_event_name) {
@@ -717,8 +778,7 @@ async function main() {
       base.message = null;
       if (newTurn) {
         base.turnStartedAt = now;
-        base.agents = [];
-        base.tasks = [];
+        keepBackgroundRows(base);
       }
       saveState(base);
       break;
@@ -761,18 +821,63 @@ async function main() {
         base.planApprovedAt = now;
         if (base.permissionMode === "plan") base.permissionMode = null;
       }
-      if (AGENT_TOOLS.has(input.tool_name) && isSyncAgent(input)) {
-        removeAgent(base, input);
-      } else if (isBackgroundBash(input)) {
-        recordTaskId(base, input);
+      if (AGENT_TOOLS.has(input.tool_name)) {
+        if (isSyncAgent(input)) {
+          removeAgent(base, input);
+        } else if (Array.isArray(base.agents)) {
+          // A background agent's PostToolUse fires at spawn; its structured
+          // agentId is the name a TaskStop uses — record it for kill matching
+          const res = input.tool_response;
+          const aid = res && typeof res === "object" ? res.agentId : null;
+          const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
+          if (typeof aid === "string" && aid && id) {
+            const entry = base.agents.find((a) => a && a.id === id);
+            if (entry) entry.agentId = aid;
+          }
+        }
+      } else if (isMonitor(input)) {
+        // Same for a watch: the response's structured taskId is what a
+        // TaskStop names. Kept out of the taskId field — per-event
+        // notifications name it while the watch is still running, and the
+        // reap would take the row for finished (see isMonitor).
+        const res = input.tool_response;
+        const mid = res && typeof res === "object" ? res.taskId : null;
+        const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
+        if (typeof mid === "string" && mid && id && Array.isArray(base.tasks)) {
+          const entry = base.tasks.find((t) => t && t.id === id);
+          if (entry) entry.monitorId = mid;
+        }
       } else if (input.tool_name === "Bash") {
-        // A foreground command moved to the background mid-run (Ctrl-B, or the
-        // harness promoting a long runner): no PreToolUse recorded it, but its
-        // response carries a backgroundTaskId — add the row now.
+        // Any Bash response carrying a backgroundTaskId is a live background
+        // command: attach the id to its PreToolUse row, or add the row when
+        // none was recorded (PreToolUse lost to the unlocked fallback, or a
+        // foreground command moved to the background mid-run — Ctrl-B, or the
+        // harness promoting a long runner). A bg request without the id never
+        // detached (finished or failed synchronously) — drop its row.
         const res = input.tool_response;
         const taskId = res && typeof res === "object" ? res.backgroundTaskId : null;
         if (typeof taskId === "string" && taskId) {
-          pushTask(base, input, now, { taskId });
+          attachTaskId(base, input, now, taskId);
+        } else if (isBackgroundBash(input)) {
+          removeTask(base, input);
+        }
+      } else if (KILL_TOOLS.has(input.tool_name)) {
+        // An explicit stop leaves no completion notification in the
+        // transcript (verified against real sessions), so the reap would
+        // never drop these rows — remove them by the stopped id here.
+        const ti = input.tool_input || {};
+        const killed = [ti.task_id, ti.taskId, ti.shell_id, ti.shellId].find(
+          (v) => typeof v === "string" && v
+        );
+        if (killed) {
+          if (Array.isArray(base.tasks)) {
+            base.tasks = base.tasks.filter(
+              (t) => !(t && (t.taskId === killed || t.monitorId === killed))
+            );
+          }
+          if (Array.isArray(base.agents)) {
+            base.agents = base.agents.filter((a) => !(a && a.agentId === killed));
+          }
         }
       } else if (input.tool_name === "SendMessage") {
         // A message to an agent with no active task resumes it from its
@@ -784,7 +889,9 @@ async function main() {
         const res = input.tool_response;
         const resumed = res && typeof res === "object" ? res.resumedAgentId : null;
         if (typeof resumed === "string" && resumed) {
-          pushAgent(base, input, now, cleanLabel((input.tool_input || {}).summary));
+          pushAgent(base, input, now, cleanLabel((input.tool_input || {}).summary), {
+            agentId: resumed,
+          });
         }
       }
       saveState(base);
@@ -811,8 +918,7 @@ async function main() {
       // plan cycle begins (permission mode transitions back to "plan").
       base.turnStartedAt = null;
       base.turnActive = false;
-      base.agents = [];
-      base.tasks = [];
+      keepBackgroundRows(base);
       saveState(base);
       spawnPrFetch(sessionId, base.cwd);
       break;
