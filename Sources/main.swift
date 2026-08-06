@@ -772,8 +772,8 @@ final class SessionRowView: NSView {
     // badge, so the first update is a correct no-op for mode-less sessions
     private var modeRaw: String?
     private var planShown: Bool?
-    // Gap before the title only while the badge shows — a constant 6 on an
-    // empty badge would widen the icon→title gap for every mode-less row
+    // Gap before the time only while the badge shows — a constant 6 on an
+    // empty badge would widen the right-side gap for every mode-less row
     private var badgeGap: NSLayoutConstraint?
     private var planGap: NSLayoutConstraint?
     private let highlight = NSView()
@@ -844,8 +844,8 @@ final class SessionRowView: NSView {
             glyph.widthAnchor.constraint(equalToConstant: 16),
             glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            // [icon][mode badge][project] ......... [plan badge][time or status name]
-            modeBadge.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
+            // [icon][project] ......... [plan badge][mode badge][time or status name]
+            projectLabel.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
             projectLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             projectLabel.trailingAnchor.constraint(lessThanOrEqualTo: planBadge.leadingAnchor, constant: -8),
 
@@ -860,9 +860,9 @@ final class SessionRowView: NSView {
             separator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        badgeGap = projectLabel.leadingAnchor.constraint(equalTo: modeBadge.trailingAnchor)
+        badgeGap = modeBadge.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor)
         badgeGap?.isActive = true
-        planGap = planBadge.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor)
+        planGap = planBadge.trailingAnchor.constraint(equalTo: modeBadge.leadingAnchor)
         planGap?.isActive = true
 
         // Hover-revealed jump button ("Open in <app>"). It swaps in for the
@@ -912,6 +912,7 @@ final class SessionRowView: NSView {
         jumpButton.isHidden = !show
         rightLabel.isHidden = show
         planBadge.isHidden = show
+        modeBadge.isHidden = show
         titleClearsButton?.isActive = show
     }
 
@@ -961,7 +962,7 @@ final class SessionRowView: NSView {
             modeBadge.layer?.backgroundColor =
                 badge.text.isEmpty ? nil : badge.color.withAlphaComponent(0.18).cgColor
             modeBadge.toolTip = badge.text.isEmpty ? nil : "Permission mode: \(s.permissionMode ?? "")"
-            badgeGap?.constant = badge.text.isEmpty ? 0 : 6
+            badgeGap?.constant = badge.text.isEmpty ? 0 : -6
             modeBadge.invalidateIntrinsicContentSize()
         }
 
