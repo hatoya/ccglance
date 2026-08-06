@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.13.0
+
+- The permission-mode badge now sits to the left of the session title ([icon][mode badge][title]) instead of next to the elapsed time on the right, so the mode is visible at a glance next to the session name. The badge also stays visible while hovering a row (the hover jump button now only replaces the time/status and plan badge)
+
 ## v1.12.0
 
 - The plan-approved check icon now stays on the session row after the turn ends — previously it disappeared as soon as the turn finished, so a quick approval was easy to miss. The badge is cleared only when a new plan cycle starts (the session's permission mode transitions back to `plan`), surviving turn ends and session restarts
