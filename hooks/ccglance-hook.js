@@ -331,12 +331,12 @@ function isSyncAgent(input) {
   return input.tool_name === "Task";
 }
 
-function pushAgent(base, input, now) {
+function pushAgent(base, input, now, description) {
   const ti = input.tool_input || {};
   const agents = Array.isArray(base.agents) ? base.agents : [];
   agents.push({
     id: typeof input.tool_use_id === "string" ? input.tool_use_id : null,
-    description: agentDescription(input),
+    description: description !== undefined ? description : agentDescription(input),
     type: typeof ti.subagent_type === "string" ? ti.subagent_type : null,
     startedAt: now,
   });
@@ -773,6 +773,18 @@ async function main() {
         const taskId = res && typeof res === "object" ? res.backgroundTaskId : null;
         if (typeof taskId === "string" && taskId) {
           pushTask(base, input, now, { taskId });
+        }
+      } else if (input.tool_name === "SendMessage") {
+        // A message to an agent with no active task resumes it from its
+        // transcript in the background — no Agent tool call records it, so
+        // the response's resumedAgentId is the only signal (a send to a
+        // still-running agent is merely delivered and carries no such field).
+        // The completion notification names this call's tool_use_id, so the
+        // normal reap path clears the row.
+        const res = input.tool_response;
+        const resumed = res && typeof res === "object" ? res.resumedAgentId : null;
+        if (typeof resumed === "string" && resumed) {
+          pushAgent(base, input, now, cleanLabel((input.tool_input || {}).summary));
         }
       }
       saveState(base);
