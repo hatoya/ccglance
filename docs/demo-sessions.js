@@ -29,6 +29,8 @@ function write(id, state) {
       agents: state.agents || null,
       tasks: state.tasks || null,
       pr: state.pr || null,
+      permissionMode: state.permissionMode || null,
+      planApprovedAt: state.planApprovedAt ?? null,
       updatedAt: now,
     })
   );
@@ -46,6 +48,7 @@ function tick() {
     project: "ccglance",
     title: "Translate README to English",
     status: "thinking",
+    permissionMode: "plan",
     turnStartedAt: start - 74,
     agents: [
       { description: "Survey docs structure", type: "Explore", startedAt: start - 41 },
@@ -65,13 +68,14 @@ function tick() {
   } else {
     s2 = { status: "thinking", turnStartedAt: start - 8 };
   }
-  write(IDS[1], { project: "my-webapp", title: "Fix login redirect", ...s2 });
+  write(IDS[1], { project: "my-webapp", title: "Fix login redirect", permissionMode: "acceptEdits", ...s2 });
 
   // Session 3: finished, PR open
   write(IDS[2], {
     project: "my-webapp",
     title: "Add unit tests",
     status: "idle",
+    planApprovedAt: start - 300,
     pr: { number: 42, state: "OPEN", isDraft: false, url: null },
   });
 }
