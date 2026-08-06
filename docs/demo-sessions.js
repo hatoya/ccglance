@@ -68,13 +68,14 @@ function tick() {
   } else {
     s2 = { status: "thinking", turnStartedAt: start - 8 };
   }
-  write(IDS[1], { project: "my-webapp", title: "Fix login redirect", ...s2 });
+  write(IDS[1], { project: "my-webapp", title: "Fix login redirect", permissionMode: "acceptEdits", ...s2 });
 
   // Session 3: finished, PR open
   write(IDS[2], {
     project: "my-webapp",
     title: "Add unit tests",
     status: "idle",
+    permissionMode: "auto",
     pr: { number: 42, state: "OPEN", isDraft: false, url: null },
   });
 }
