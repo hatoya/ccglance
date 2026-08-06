@@ -1067,13 +1067,14 @@ enum ChildRow {
     case command(BackgroundTask)
 
     static func all(of session: SessionState) -> [ChildRow] {
-        (session.agents ?? []).map { ChildRow.agent($0) }
-            + (DisplayPrefs.hideTasks ? [] : (session.tasks ?? [])).map { ChildRow.command($0) }
+        if DisplayPrefs.hideTasks { return [] }
+        return (session.agents ?? []).map { ChildRow.agent($0) }
+            + (session.tasks ?? []).map { ChildRow.command($0) }
     }
 
     /// Row count without building the array (the 0.1s tick asks for it often)
     static func count(of session: SessionState) -> Int {
-        (session.agents?.count ?? 0) + (DisplayPrefs.hideTasks ? 0 : session.tasks?.count ?? 0)
+        DisplayPrefs.hideTasks ? 0 : (session.agents?.count ?? 0) + (session.tasks?.count ?? 0)
     }
 }
 
