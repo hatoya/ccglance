@@ -2,6 +2,12 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.16.0
+
+- New "Display" submenu in the right-click menu lets you toggle four row elements individually (all shown by default, persisted across restarts): the permission-mode text, the plan-approved check, the elapsed time (rows fall back to the status word like "Thinking…" or the tool name when hidden), and background-task child rows (subagent and background-command rows; the panel height shrinks accordingly)
+- Agents resumed in the background via `SendMessage` (e.g. asking a finished review agent to re-review) now appear as running agent rows under their session — previously this path bypassed the existing detection and the resumed agent never showed on the panel
+- Re-recorded the README demo GIF with the latest UI, now including the permission-mode badges (PLAN / ACCEPT / AUTO)
+
 ## v1.15.0
 
 - The permission-mode badge is now rendered as plain colored text instead of a pill with a tinted background, removing the custom padded-label class for a lighter look that matches the rest of the row
