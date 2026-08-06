@@ -772,8 +772,8 @@ final class SessionRowView: NSView {
     // badge, so the first update is a correct no-op for mode-less sessions
     private var modeRaw: String?
     private var planShown: Bool?
-    // Gap after the title only while the badge shows — a constant 6 on an
-    // empty badge would widen the title→badge gap for every mode-less row
+    // Gap before the title only while the badge shows — a constant 6 on an
+    // empty badge would widen the icon→title gap for every mode-less row
     private var badgeGap: NSLayoutConstraint?
     private var planGap: NSLayoutConstraint?
     private let highlight = NSView()
@@ -844,10 +844,10 @@ final class SessionRowView: NSView {
             glyph.widthAnchor.constraint(equalToConstant: 16),
             glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            // [icon][project][mode badge] ......... [plan badge][time or status name]
-            projectLabel.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
+            // [icon][mode badge][project] ......... [plan badge][time or status name]
+            modeBadge.leadingAnchor.constraint(equalTo: glyph.trailingAnchor, constant: 8),
             projectLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            modeBadge.trailingAnchor.constraint(lessThanOrEqualTo: planBadge.leadingAnchor, constant: -8),
+            projectLabel.trailingAnchor.constraint(lessThanOrEqualTo: planBadge.leadingAnchor, constant: -8),
 
             planBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
             modeBadge.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -860,7 +860,7 @@ final class SessionRowView: NSView {
             separator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        badgeGap = modeBadge.leadingAnchor.constraint(equalTo: projectLabel.trailingAnchor)
+        badgeGap = projectLabel.leadingAnchor.constraint(equalTo: modeBadge.trailingAnchor)
         badgeGap?.isActive = true
         planGap = planBadge.trailingAnchor.constraint(equalTo: rightLabel.leadingAnchor)
         planGap?.isActive = true
@@ -882,9 +882,7 @@ final class SessionRowView: NSView {
             jumpButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             jumpButton.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
-        // Anchored to the mode badge (which trails the title, collapsing to
-        // zero width when empty) so both the title and its badge clear the button.
-        titleClearsButton = modeBadge.trailingAnchor.constraint(
+        titleClearsButton = projectLabel.trailingAnchor.constraint(
             lessThanOrEqualTo: jumpButton.leadingAnchor, constant: -8)
 
         // .inVisibleRect keeps the area glued to the row across resizes (no
