@@ -735,38 +735,13 @@ final class HoverButton: NSButton {
 
 // MARK: - Session row view (table-style)
 
-/// Label with built-in horizontal padding that collapses to zero width when
-/// empty — hides the badge without toggling constraints.
-final class BadgeLabel: NSTextField {
-    // NSTextFieldCell top-aligns its text, so the extra height added below
-    // would otherwise all become bottom padding; center it vertically.
-    private final class CenteredCell: NSTextFieldCell {
-        override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-            var rect = cellFrame
-            let textHeight = cellSize(forBounds: cellFrame).height
-            rect.origin.y += (cellFrame.height - textHeight) / 2
-            rect.size.height = textHeight
-            super.drawInterior(withFrame: rect, in: controlView)
-        }
-    }
-    override class var cellClass: AnyClass? {
-        get { CenteredCell.self }
-        set {}
-    }
-    override var intrinsicContentSize: NSSize {
-        var s = super.intrinsicContentSize
-        if !stringValue.isEmpty { s.width += 10; s.height += 2 }
-        return s
-    }
-}
-
 final class SessionRowView: NSView {
     static let height: CGFloat = 28
 
     let glyph = NSTextField(labelWithString: "")
     let projectLabel = NSTextField(labelWithString: "")
-    let planBadge = BadgeLabel(labelWithString: "")     // green check icon after plan approval, until a new plan cycle starts
-    let modeBadge = BadgeLabel(labelWithString: "")     // permission mode ("PLAN", "BYPASS", …)
+    let planBadge = NSTextField(labelWithString: "")    // green check icon after plan approval, until a new plan cycle starts
+    let modeBadge = NSTextField(labelWithString: "")    // permission mode ("PLAN", "BYPASS", …)
     let rightLabel = NSTextField(labelWithString: "")   // elapsed time if available, otherwise status name
     // Last-applied permissionMode (diff guard); nil matches the initial empty
     // badge, so the first update is a correct no-op for mode-less sessions
@@ -809,11 +784,7 @@ final class SessionRowView: NSView {
         rightLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         rightLabel.alignment = .right
         modeBadge.font = NSFont.systemFont(ofSize: 9, weight: .bold)
-        modeBadge.alignment = .center
-        modeBadge.wantsLayer = true
-        modeBadge.layer?.cornerRadius = 3
         planBadge.font = Self.faGlyphFont ?? NSFont.systemFont(ofSize: 11, weight: .bold)
-        planBadge.alignment = .center
 
         // Long session names must truncate with an ellipsis, never push the
         // right column: the name compresses first, the time/status never does.
@@ -959,11 +930,8 @@ final class SessionRowView: NSView {
             let badge = Self.modeBadgeInfo(s.permissionMode)
             modeBadge.stringValue = badge.text
             modeBadge.textColor = badge.color
-            modeBadge.layer?.backgroundColor =
-                badge.text.isEmpty ? nil : badge.color.withAlphaComponent(0.18).cgColor
             modeBadge.toolTip = badge.text.isEmpty ? nil : "Permission mode: \(s.permissionMode ?? "")"
             badgeGap?.constant = badge.text.isEmpty ? 0 : -6
-            modeBadge.invalidateIntrinsicContentSize()
         }
 
         let approved = s.planApprovedAt != nil
@@ -974,7 +942,6 @@ final class SessionRowView: NSView {
             planBadge.textColor = Theme.prOpen
             planBadge.toolTip = approved ? "Plan approved" : nil
             planGap?.constant = approved ? -6 : 0
-            planBadge.invalidateIntrinsicContentSize()
         }
 
         switch s.status {
