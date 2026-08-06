@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.14.0
+
+- The permission-mode badge moved from the left of the session title into the row's right-side cluster (between the plan-approved check and the elapsed time). Session titles now start at the same left edge on every row regardless of badge width; the badge hides while hovering a row so it never overlaps the jump button
+
 ## v1.13.0
 
 - The permission-mode badge now sits to the left of the session title ([icon][mode badge][title]) instead of next to the elapsed time on the right, so the mode is visible at a glance next to the session name. The badge also stays visible while hovering a row (the hover jump button now only replaces the time/status and plan badge)
