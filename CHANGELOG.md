@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.15.0
+
+- The permission-mode badge is now rendered as plain colored text instead of a pill with a tinted background, removing the custom padded-label class for a lighter look that matches the rest of the row
+
 ## v1.14.0
 
 - The permission-mode badge moved from the left of the session title into the row's right-side cluster (between the plan-approved check and the elapsed time). Session titles now start at the same left edge on every row regardless of badge width; the badge hides while hovering a row so it never overlaps the jump button
