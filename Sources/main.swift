@@ -733,6 +733,22 @@ final class HoverButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+// MARK: - Display preferences
+
+/// User-togglable visibility of row elements (context menu → Display).
+/// Stored as "hide" flags so the missing-key default (false) shows everything.
+enum DisplayPrefs {
+    static let modeKey = "ccglanceHideModeBadge"
+    static let planKey = "ccglanceHidePlanBadge"
+    static let timeKey = "ccglanceHideElapsedTime"
+    static let tasksKey = "ccglanceHideBackgroundTasks"
+
+    static var hideMode: Bool { UserDefaults.standard.bool(forKey: modeKey) }
+    static var hidePlan: Bool { UserDefaults.standard.bool(forKey: planKey) }
+    static var hideTime: Bool { UserDefaults.standard.bool(forKey: timeKey) }
+    static var hideTasks: Bool { UserDefaults.standard.bool(forKey: tasksKey) }
+}
+
 // MARK: - Session row view (table-style)
 
 final class SessionRowView: NSView {
@@ -925,16 +941,19 @@ final class SessionRowView: NSView {
             return sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s"
         }
 
-        if s.permissionMode != modeRaw {
-            modeRaw = s.permissionMode
-            let badge = Self.modeBadgeInfo(s.permissionMode)
+        // Effective values fold the display prefs in, so a pref toggle changes
+        // the compared value and the diff guard re-fires on the next tick
+        let mode = DisplayPrefs.hideMode ? nil : s.permissionMode
+        if mode != modeRaw {
+            modeRaw = mode
+            let badge = Self.modeBadgeInfo(mode)
             modeBadge.stringValue = badge.text
             modeBadge.textColor = badge.color
-            modeBadge.toolTip = badge.text.isEmpty ? nil : "Permission mode: \(s.permissionMode ?? "")"
+            modeBadge.toolTip = badge.text.isEmpty ? nil : "Permission mode: \(mode ?? "")"
             badgeGap?.constant = badge.text.isEmpty ? 0 : -6
         }
 
-        let approved = s.planApprovedAt != nil
+        let approved = !DisplayPrefs.hidePlan && s.planApprovedAt != nil
         if approved != planShown {
             planShown = approved
             planBadge.stringValue = approved
@@ -950,7 +969,7 @@ final class SessionRowView: NSView {
             glyph.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
             glyph.textColor = Theme.orange
             // Elapsed time when available; fall back to status name when it isn't
-            let elapsed = elapsedString()
+            let elapsed = DisplayPrefs.hideTime ? "" : elapsedString()
             if elapsed.isEmpty {
                 rightLabel.stringValue = s.status == "thinking" ? "Thinking…" : (s.tool ?? "Using tool")
             } else {
@@ -1048,13 +1067,14 @@ enum ChildRow {
     case command(BackgroundTask)
 
     static func all(of session: SessionState) -> [ChildRow] {
-        (session.agents ?? []).map { ChildRow.agent($0) }
+        if DisplayPrefs.hideTasks { return [] }
+        return (session.agents ?? []).map { ChildRow.agent($0) }
             + (session.tasks ?? []).map { ChildRow.command($0) }
     }
 
     /// Row count without building the array (the 0.1s tick asks for it often)
     static func count(of session: SessionState) -> Int {
-        (session.agents?.count ?? 0) + (session.tasks?.count ?? 0)
+        DisplayPrefs.hideTasks ? 0 : (session.agents?.count ?? 0) + (session.tasks?.count ?? 0)
     }
 }
 
@@ -1499,6 +1519,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(withTitle: "Clear finished sessions", action: #selector(clearIdle), keyEquivalent: "")
         menu.addItem(withTitle: "Reinstall Claude Code hooks", action: #selector(reinstallHooks), keyEquivalent: "")
         menu.addItem(.separator())
+        let displayItem = menu.addItem(withTitle: "Display", action: nil, keyEquivalent: "")
+        let displayMenu = NSMenu()
+        for (title, key) in [
+            ("Show permission mode", DisplayPrefs.modeKey),
+            ("Show plan check", DisplayPrefs.planKey),
+            ("Show elapsed time", DisplayPrefs.timeKey),
+            ("Show background tasks", DisplayPrefs.tasksKey),
+        ] {
+            let item = displayMenu.addItem(
+                withTitle: title, action: #selector(toggleDisplayPref(_:)), keyEquivalent: "")
+            item.representedObject = key
+            item.state = UserDefaults.standard.bool(forKey: key) ? .off : .on
+            item.target = self  // the top-level target loop below doesn't reach submenu items
+        }
+        displayItem.submenu = displayMenu
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "")
         for item in menu.items { item.target = self }
         effect.menu = menu
@@ -1847,6 +1883,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func clearIdle() { sessions = StateStore.clearAndReload(); tick() }
+
+    // No explicit refresh: the 0.1s tick reads DisplayPrefs on every pass
+    @objc private func toggleDisplayPref(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        let hide = !UserDefaults.standard.bool(forKey: key)
+        UserDefaults.standard.set(hide, forKey: key)
+        sender.state = hide ? .off : .on
+    }
+
     @objc private func reinstallHooks() { runInstaller() }
     @objc private func quit() { NSApp.terminate(nil) }
 
