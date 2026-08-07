@@ -757,8 +757,29 @@ async function main() {
       base.tool = null;
       base.turnStartedAt = null;
       base.turnActive = false;
-      base.agents = [];
-      base.tasks = [];
+      // SessionStart is not only a fresh start: source is one of startup /
+      // resume / clear / compact, and resume and compact fire while background
+      // work launched earlier is still running and still reporting into the
+      // same transcript. Wiping the lists here dropped those rows for good — no
+      // later event re-adds them, and the reap can only remove — so a command
+      // running for hours stayed invisible for the rest of the session. Keep
+      // what the reap can still match instead; a genuinely new session has no
+      // prior state to keep, so startup is unaffected either way.
+      // /clear is the exception: it drops the transcript the reap reads, so a
+      // surviving row could never be cleared.
+      //
+      // A resume that follows a hard crash (no SessionEnd, so the state file
+      // outlived the process that owned the work) can keep a row whose command
+      // died with that process. That is accepted: the alternative — expiring
+      // rows by age — hides exactly the long-running work this fixes, and a
+      // clean exit deletes the whole file at SessionEnd.
+      if (input.source === "clear") {
+        base.agents = [];
+        base.tasks = [];
+      } else {
+        reapFinished(base, input.transcript_path, TAIL_BYTES_TURN);
+        keepBackgroundRows(base);
+      }
       saveState(base);
       launchApp();
       spawnPrFetch(sessionId, base.cwd);
