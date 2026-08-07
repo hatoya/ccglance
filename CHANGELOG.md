@@ -2,6 +2,11 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.16.1
+
+- Background task rows (background Bash commands, `Monitor` watches, background agents) now survive turn boundaries — the work outlives the turn that launched it, but the panel used to clear every row at Stop and at the next prompt, so still-running tasks vanished. Rows that can still be reaped from the transcript are kept and only untrustworthy strays are swept; turn boundaries also scan a wider 4MB transcript window as a last chance to catch a completion notification
+- Recovered rows for background Bash commands whose `PreToolUse` record was lost, dropped rows for background requests that finished synchronously, and removed rows on `TaskStop`/`KillShell` (an explicit stop produces no completion notification, so monitors and background agents now record their task/agent id for kill matching)
+
 ## v1.16.0
 
 - New "Display" submenu in the right-click menu lets you toggle four row elements individually (all shown by default, persisted across restarts): the permission-mode text, the plan-approved check, the elapsed time (rows fall back to the status word like "Thinking…" or the tool name when hidden), and background-task child rows (subagent and background-command rows; the panel height shrinks accordingly)
