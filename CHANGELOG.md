@@ -2,6 +2,12 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.17.0
+
+- Open PRs that GitHub reports as `CONFLICTING` now show an orange forked-branch icon (a branch that never rejoined) instead of the green open — or gray draft — PR icon, with a `PR #n · conflict` tooltip. Merged, closed, and undetermined states keep their previous look, and the hook falls back to the old field set when an older `gh` rejects the new `mergeable` field
+- Permission-waiting rows now show the elapsed time in white instead of the word `Waiting`; the yellow hand icon and pulsing highlight still signal the wait, and the icon gained a `Waiting for permission` tooltip. The right label stays empty when the "hide time" display option is on
+- Background task rows no longer disappear when a session is resumed or compacted — `SessionStart` used to clear all agent/task rows unconditionally, so long-running background work stayed invisible for the rest of the session. Rows are now reaped from the transcript instead, and only `/clear` wipes them outright
+
 ## v1.16.1
 
 - Background task rows (background Bash commands, `Monitor` watches, background agents) now survive turn boundaries — the work outlives the turn that launched it, but the panel used to clear every row at Stop and at the next prompt, so still-running tasks vanished. Rows that can still be reaped from the transcript are kept and only untrustworthy strays are swept; turn boundaries also scan a wider 4MB transcript window as a last chance to catch a completion notification
