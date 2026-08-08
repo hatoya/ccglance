@@ -566,16 +566,24 @@ const GH_CANDIDATES = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
 
 // done(pr): pr object → set it, null → clear the field (definitively no PR),
 // undefined → keep the last known state (transient failure: network, timeout)
-function runGhPrView(cwd, candidates, done) {
+const GH_FIELDS = "number,state,isDraft,url,mergeable";
+const GH_FIELDS_LEGACY = "number,state,isDraft,url"; // gh older than the mergeable field
+
+function runGhPrView(cwd, candidates, done, fields = GH_FIELDS) {
   if (candidates.length === 0) return done(undefined);
   execFile(
     candidates[0],
-    ["pr", "view", "--json", "number,state,isDraft,url"],
+    ["pr", "view", "--json", fields],
     { cwd, timeout: 15000 },
     (err, stdout, stderr) => {
       // Hooks may run with a limited PATH; try well-known install locations
-      if (err && err.code === "ENOENT") return runGhPrView(cwd, candidates.slice(1), done);
+      if (err && err.code === "ENOENT") return runGhPrView(cwd, candidates.slice(1), done, fields);
       if (err) {
+        // A gh too old for one of the fields rejects the whole call; retry
+        // without the newest one rather than losing PR status entirely
+        if (fields !== GH_FIELDS_LEGACY && /unknown json field/i.test(String(stderr))) {
+          return runGhPrView(cwd, candidates, done, GH_FIELDS_LEGACY);
+        }
         const definitive = /no pull requests found|not a git repository|no git remotes/i.test(
           String(stderr)
         );
@@ -588,6 +596,9 @@ function runGhPrView(cwd, candidates, done) {
           number: j.number,
           state: j.state, // "OPEN" | "MERGED" | "CLOSED"
           isDraft: !!j.isDraft,
+          // "MERGEABLE" | "CONFLICTING" | "UNKNOWN"; dropped from the JSON when
+          // absent, which the app reads as unknown
+          mergeable: typeof j.mergeable === "string" ? j.mergeable : undefined,
           url: j.url,
           checkedAt: Date.now() / 1000,
         });

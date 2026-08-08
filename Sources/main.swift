@@ -23,6 +23,7 @@ struct PRInfo: Codable {
     var number: Int?
     var state: String?    // "OPEN" | "MERGED" | "CLOSED"
     var isDraft: Bool?
+    var mergeable: String?  // "MERGEABLE" | "CONFLICTING" | "UNKNOWN" (optional: older hooks lack it)
     var url: String?
     var checkedAt: Double?
 }
@@ -367,6 +368,7 @@ enum Theme {
     // Font Awesome 6 Free Solid glyphs (font bundled in Resources)
     static let faPullRequest = "\u{E13C}"   // code-pull-request
     static let faMerge = "\u{F387}"         // code-merge
+    static let faConflict = "\u{E13B}"      // code-fork (branches still diverged: merge conflict)
     static let faHand = "\u{F256}"          // hand (waiting for input)
     static let faCheck = "\u{F00C}"         // check (plan approved)
     static func faFont(size: CGFloat) -> NSFont? {
@@ -1044,6 +1046,11 @@ final class SessionRowView: NSView {
         let color: NSColor
         let label: String
         switch state {
+        // Conflicts outrank draft/open: they need a hand before the PR can move.
+        // GitHub computes mergeability asynchronously, so anything short of an
+        // explicit CONFLICTING keeps the normal open/draft look.
+        case "OPEN" where pr.mergeable == "CONFLICTING":
+            (icon, color, label) = (Theme.faConflict, Theme.orange, "conflict")
         case "OPEN" where pr.isDraft == true:
             (icon, color, label) = (Theme.faPullRequest, Theme.prDraft, "draft")
         case "OPEN":
