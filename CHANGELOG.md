@@ -2,6 +2,11 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.16.2
+
+- Background task rows (background Bash commands, `Monitor` watches, background agents) now survive session resume and compaction. `SessionStart` fires for resume and compact too, not just a fresh start, and it unconditionally wiped the rows — work launched earlier and still running stayed invisible for the rest of the session. Rows the notification reap can still match are kept, and the lists are cleared only on `/clear`, which drops the transcript the reap reads
+- Rows waiting for permission now show elapsed time instead of a yellow "Waiting" label, matching the busy rows. The pulsing highlight and the hand icon (which gained a "Waiting for permission" tooltip) still carry the waiting state, and the time hides with the Display menu's time toggle
+
 ## v1.16.1
 
 - Background task rows (background Bash commands, `Monitor` watches, background agents) now survive turn boundaries — the work outlives the turn that launched it, but the panel used to clear every row at Stop and at the next prompt, so still-running tasks vanished. Rows that can still be reaped from the transcript are kept and only untrustworthy strays are swept; turn boundaries also scan a wider 4MB transcript window as a last chance to catch a completion notification
