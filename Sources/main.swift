@@ -987,7 +987,7 @@ final class SessionRowView: NSView {
             }
             glyph.textColor = Theme.yellow
             rightLabel.stringValue = "Waiting"
-            rightLabel.textColor = Theme.yellow
+            rightLabel.textColor = .labelColor
             let pulse = 0.10 + 0.10 * (0.5 + 0.5 * sin(now * 4))
             highlight.layer?.backgroundColor = Theme.yellow.withAlphaComponent(pulse).cgColor
         default: // idle
