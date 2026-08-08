@@ -368,7 +368,7 @@ enum Theme {
     // Font Awesome 6 Free Solid glyphs (font bundled in Resources)
     static let faPullRequest = "\u{E13C}"   // code-pull-request
     static let faMerge = "\u{F387}"         // code-merge
-    static let faConflict = "\u{F071}"      // triangle-exclamation (PR has merge conflicts)
+    static let faConflict = "\u{E13B}"      // code-fork (branches still diverged: merge conflict)
     static let faHand = "\u{F256}"          // hand (waiting for input)
     static let faCheck = "\u{F00C}"         // check (plan approved)
     static func faFont(size: CGFloat) -> NSFont? {
