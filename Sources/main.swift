@@ -978,15 +978,17 @@ final class SessionRowView: NSView {
             rightLabel.textColor = .labelColor
             highlight.layer?.backgroundColor = nil
         case "permission":
+            // The hand glyph and the pulsing highlight carry the waiting state,
+            // so the label is free to show elapsed time like the busy rows do
             if let faFont = Self.faGlyphFont {
-                setGlyph(font: faFont, tooltip: nil)
+                setGlyph(font: faFont, tooltip: "Waiting for permission")
                 glyph.stringValue = Theme.faHand
             } else {
-                setGlyph(font: Self.systemGlyphFont, tooltip: nil)
+                setGlyph(font: Self.systemGlyphFont, tooltip: "Waiting for permission")
                 glyph.stringValue = "●"
             }
             glyph.textColor = Theme.yellow
-            rightLabel.stringValue = "Waiting"
+            rightLabel.stringValue = DisplayPrefs.hideTime ? "" : elapsedString()
             rightLabel.textColor = .labelColor
             let pulse = 0.10 + 0.10 * (0.5 + 0.5 * sin(now * 4))
             highlight.layer?.backgroundColor = Theme.yellow.withAlphaComponent(pulse).cgColor
