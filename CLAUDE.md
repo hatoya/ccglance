@@ -4,7 +4,7 @@ Swift/AppKitでmacOSネイティブアプリを構築する開発者。外部依
 
 ## プロジェクト概要
 
-Claude Codeのセッション状態を常時最前面のフローティングパネルに表示するmacOSアプリ。Claude Codeのライフサイクルhooks（SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / Stop / SessionEnd）が `~/.claude/ccglance/sessions/<session_id>.json` にセッション状態を書き込み、アプリが0.5秒ごとにディレクトリをポーリングして描画する。
+Claude Codeのセッション状態を常時最前面のフローティングパネルに表示するmacOSアプリ。Claude Codeのライフサイクルhooks（SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / PermissionRequest / Stop / SessionEnd）が `~/.claude/ccglance/sessions/<session_id>.json` にセッション状態を書き込み、アプリが0.5秒ごとにディレクトリをポーリングして描画する。
 
 ## VOICEVOX音声通知
 

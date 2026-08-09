@@ -756,7 +756,7 @@ async function main() {
   // Turn boundaries get the wide scan: rows survive them now (see
   // keepBackgroundRows), so this is the last cheap moment to catch a
   // notification that already scrolled past the per-event tail.
-  if (ev === "PreToolUse" || ev === "PostToolUse" || ev === "Notification") {
+  if (ev === "PreToolUse" || ev === "PostToolUse" || ev === "Notification" || ev === "PermissionRequest") {
     reapFinished(base, input.transcript_path, TAIL_BYTES);
   } else if (ev === "Stop" || ev === "UserPromptSubmit") {
     reapFinished(base, input.transcript_path, TAIL_BYTES_TURN);
@@ -928,6 +928,18 @@ async function main() {
       }
       saveState(base);
       if (isPrMutatingTool(input)) spawnPrFetch(sessionId, base.cwd);
+      break;
+
+    // Fires when Claude Code is about to ask for permission. The Claude Desktop
+    // app raises no Notification for that (only the CLI does), so without this
+    // the panel stayed on "Running command" for the whole time a command's
+    // approval prompt was waiting. Writing nothing to stdout leaves the prompt
+    // untouched — a decision would auto-answer it.
+    case "PermissionRequest":
+      base.status = "permission";
+      base.message = "Awaiting permission";
+      if (base.turnStartedAt == null) base.turnStartedAt = now;
+      saveState(base);
       break;
 
     case "Notification": {
