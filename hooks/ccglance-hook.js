@@ -756,7 +756,9 @@ async function main() {
   // Turn boundaries get the wide scan: rows survive them now (see
   // keepBackgroundRows), so this is the last cheap moment to catch a
   // notification that already scrolled past the per-event tail.
-  if (ev === "PreToolUse" || ev === "PostToolUse" || ev === "Notification" || ev === "PermissionRequest") {
+  // PermissionRequest is deliberately absent: it blocks the prompt from
+  // appearing, and the PreToolUse moments earlier already ran this same scan.
+  if (ev === "PreToolUse" || ev === "PostToolUse" || ev === "Notification") {
     reapFinished(base, input.transcript_path, TAIL_BYTES);
   } else if (ev === "Stop" || ev === "UserPromptSubmit") {
     reapFinished(base, input.transcript_path, TAIL_BYTES_TURN);
