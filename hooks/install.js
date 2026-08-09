@@ -25,6 +25,8 @@ const EVENTS = [
   "PreToolUse",
   "PostToolUse",
   "Notification",
+  // The desktop app signals permission prompts only through this event
+  "PermissionRequest",
   "Stop",
 ];
 
