@@ -44,6 +44,7 @@ struct SessionState: Codable {
     var tool: String?
     var message: String?
     var turnStartedAt: Double?
+    var waitStartedAt: Double?  // set while a prompt awaits an answer, so the waiting row can time the wait alone (optional: older files lack it)
     var createdAt: Double?   // set once at SessionStart (optional: older files lack it)
     var updatedAt: Double
     var agents: [AgentTask]?  // running subagents (optional: older files lack it)
@@ -937,8 +938,8 @@ final class SessionRowView: NSView {
         }
         projectLabel.stringValue = name
 
-        func elapsedString() -> String {
-            guard let start = s.turnStartedAt else { return "" }
+        func elapsedString(since start: Double?) -> String {
+            guard let start else { return "" }
             let sec = max(0, Int(now - start))
             return sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s"
         }
@@ -971,7 +972,7 @@ final class SessionRowView: NSView {
             glyph.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
             glyph.textColor = Theme.orange
             // Elapsed time when available; fall back to status name when it isn't
-            let elapsed = DisplayPrefs.hideTime ? "" : elapsedString()
+            let elapsed = DisplayPrefs.hideTime ? "" : elapsedString(since: s.turnStartedAt)
             if elapsed.isEmpty {
                 rightLabel.stringValue = s.status == "thinking" ? "Thinking…" : (s.tool ?? "Using tool")
             } else {
@@ -981,7 +982,10 @@ final class SessionRowView: NSView {
             highlight.layer?.backgroundColor = nil
         case "permission":
             // The hand glyph and the pulsing highlight carry the waiting state,
-            // so the label is free to show elapsed time like the busy rows do
+            // so the label is free to show elapsed time like the busy rows do.
+            // The wait has a clock of its own, started when the prompt went up,
+            // so this reads as the time since it appeared rather than the whole
+            // turn (older hooks write no waitStartedAt — fall back to the turn).
             if let faFont = Self.faGlyphFont {
                 setGlyph(font: faFont, tooltip: "Waiting for permission")
                 glyph.stringValue = Theme.faHand
@@ -990,7 +994,8 @@ final class SessionRowView: NSView {
                 glyph.stringValue = "●"
             }
             glyph.textColor = Theme.yellow
-            rightLabel.stringValue = DisplayPrefs.hideTime ? "" : elapsedString()
+            rightLabel.stringValue = DisplayPrefs.hideTime
+                ? "" : elapsedString(since: s.waitStartedAt ?? s.turnStartedAt)
             rightLabel.textColor = .labelColor
             let pulse = 0.10 + 0.10 * (0.5 + 0.5 * sin(now * 4))
             highlight.layer?.backgroundColor = Theme.yellow.withAlphaComponent(pulse).cgColor

@@ -26,6 +26,7 @@ function write(id, state) {
       tool: state.tool || null,
       message: state.message || null,
       turnStartedAt: state.turnStartedAt ?? null,
+      waitStartedAt: state.waitStartedAt ?? null,
       agents: state.agents || null,
       tasks: state.tasks || null,
       pr: state.pr || null,
@@ -59,14 +60,23 @@ function tick() {
     ],
   });
 
-  // Session 2: editing -> awaiting permission -> thinking, on a loop
+  // Session 2: editing -> awaiting permission -> thinking, on a loop. The wait
+  // has its own clock and the turn clock restarts once it ends (see beginWait /
+  // endWait in the hook), so the timer resets at both edges of the prompt.
+  const cycleStart = now - t;
   let s2;
   if (t < 8) {
-    s2 = { status: "tool", tool: "Editing", turnStartedAt: start - 8 };
+    // Still the work that resumed at t=16 of the previous cycle
+    s2 = { status: "tool", tool: "Editing", turnStartedAt: cycleStart - 8 };
   } else if (t < 16) {
-    s2 = { status: "permission", message: "Awaiting permission", turnStartedAt: start - 8 };
+    s2 = {
+      status: "permission",
+      message: "Awaiting permission",
+      turnStartedAt: cycleStart - 8,
+      waitStartedAt: cycleStart + 8,
+    };
   } else {
-    s2 = { status: "thinking", turnStartedAt: start - 8 };
+    s2 = { status: "thinking", turnStartedAt: cycleStart + 16 };
   }
   write(IDS[1], { project: "my-webapp", title: "Fix login redirect", permissionMode: "acceptEdits", ...s2 });
 
