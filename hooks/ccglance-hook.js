@@ -342,20 +342,25 @@ function isSyncAgent(input) {
 // a running subagent carry the parent's session_id (see the lock note above)
 // and rewrite status mid-wait, which would restart the clock every time one
 // landed.
-// What the wait can be closed by: the id of the blocking tool call, or its
-// name when the event carries no id. Same defensive typing as everywhere else —
-// the value is compared against later events, never displayed.
+// Which tool call a wait belongs to. The id is what a later event can be
+// matched against; the name only tells prompts apart, because several calls of
+// one tool share it. The tag records which of the two this is. Length-capped
+// like every other value that lands in the state file; it is compared, never
+// displayed.
 function correlationId(input) {
   const id = input.tool_use_id;
-  if (typeof id === "string" && id) return id;
+  if (typeof id === "string" && id) return `id:${id.slice(0, 120)}`;
   const name = input.tool_name;
-  return typeof name === "string" && name ? name : null;
+  return typeof name === "string" && name ? `name:${name.slice(0, 120)}` : null;
 }
 
 function beginWait(base, now, id) {
-  // A prompt of a different kind is a new wait; the Notification that follows
-  // a PermissionRequest for the same prompt is the same one.
-  if (base.waitStartedAt == null || base.waitKey !== base.message) {
+  // A prompt of a different kind, or of the same kind for a different tool
+  // call, is a new wait — a denial followed by a fresh permission request is
+  // the common case. The Notification that follows a PermissionRequest for the
+  // same prompt carries no id, so it never looks like a new one.
+  const other = id != null && base.waitId != null && id !== base.waitId;
+  if (base.waitStartedAt == null || base.waitKey !== base.message || other) {
     base.waitStartedAt = now;
     base.waitKey = base.message;
     base.waitId = null;
@@ -365,23 +370,26 @@ function beginWait(base, now, id) {
   if (id) base.waitId = id;
 }
 
-// Only the awaited tool ends the wait. A background subagent reporting into
+// Only the awaited call ends the wait. A background subagent reporting into
 // this session hits PostToolUse constantly while the prompt is still up, and
-// ending the wait there would restart the clock under the user.
+// ending the wait there would restart the clock under the user — so a wait
+// known by tool name alone is left for the prompt or the turn end to close,
+// rather than closed by whichever call of that tool happens to finish first.
 function endsWait(base, input) {
   if (base.waitStartedAt == null || base.waitId == null) return false;
-  return base.waitId === input.tool_use_id || base.waitId === input.tool_name;
+  const id = input.tool_use_id;
+  return typeof id === "string" && base.waitId === `id:${id}`;
 }
 
 // The work that resumes after a wait starts from zero.
 function endWait(base, now) {
   if (base.waitStartedAt == null) return;
-  base.waitStartedAt = null;
-  base.waitKey = null;
-  base.waitId = null;
+  clearWait(base);
   base.turnStartedAt = now;
 }
 
+// Drops the wait without touching the turn clock — for the events that null it
+// out themselves (a turn ending, a session starting).
 function clearWait(base) {
   base.waitStartedAt = null;
   base.waitKey = null;
@@ -860,6 +868,7 @@ async function main() {
       // turnStartedAt can't, because PreToolUse and Notification also set it
       // (an idle "waiting for input" notification fires between turns).
       const newTurn = base.turnActive !== true;
+      const answersWait = base.status === "permission";
       base.turnActive = true;
       base.status = "thinking";
       base.tool = null;
@@ -868,8 +877,10 @@ async function main() {
         base.turnStartedAt = now;
         keepBackgroundRows(base);
       }
-      // The prompt is the answer an idle wait was waiting for
-      endWait(base, now);
+      // The prompt is the answer an idle wait was waiting for. A wait left
+      // open by a denial (no PostToolUse ever comes) must not make a steering
+      // message look like one, or it would restart the turn clock.
+      if (answersWait) endWait(base, now);
       saveState(base);
       break;
     }
