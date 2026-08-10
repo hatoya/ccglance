@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.17.1
+
+- Rows now switch to the waiting look while a command's permission prompt is open in the Claude Desktop app. The wait was only picked up from the `Notification` event, which the desktop app does not fire for permission prompts (CLI only), so the row stayed on the orange "Running command" spark. The hook now handles the `PermissionRequest` event as well, and `install.js` registers it — the installer runs on every app launch, so existing users get the registration from the app update alone (a Claude Code session restart is needed for `settings.json` to take effect). The hook writes nothing to stdout, so the prompt itself is untouched
+
 ## v1.17.0
 
 - Open PRs that GitHub reports as `CONFLICTING` now show an orange forked-branch icon (a branch that never rejoined) instead of the green open — or gray draft — PR icon, with a `PR #n · conflict` tooltip. Merged, closed, and undetermined states keep their previous look, and the hook falls back to the old field set when an older `gh` rejects the new `mergeable` field
