@@ -86,7 +86,7 @@ hooks/
 └── uninstall.js         # 全登録先からccglanceのhooksのみを削除
 build.sh                 # ビルドスクリプト（VERSIONが唯一のバージョン情報源）
 icon/                    # アプリアイコン
-docs/                    # README用アセット（demo.gif、ダウンロードボタン画像等）
+docs/                    # README用アセット（demo.gif、social-preview.png等）
 .github/workflows/release.yml  # リリース公開時にzip+sha256をビルド・添付
 ```
 
