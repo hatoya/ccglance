@@ -981,7 +981,13 @@ async function main() {
       // The prompt is the answer an idle wait was waiting for. A wait left
       // open by a denial (no PostToolUse ever comes) must not make a steering
       // message look like one, or it would restart the turn clock.
-      if (answersWait) endWait(base, now);
+      if (answersWait) {
+        // The prompt answered the wait in place of the call it was bound to —
+        // interrupted, that call never runs and never reaches PostToolUse, so
+        // its entry has to go here. Read before endWait, which forgets the id.
+        dropDeadCall(base);
+        endWait(base, now);
+      }
       saveState(base);
       break;
     }
