@@ -981,7 +981,9 @@ final class SessionRowView: NSView {
             highlight.layer?.backgroundColor = nil
         case "permission":
             // The hand glyph and the pulsing highlight carry the waiting state,
-            // so the label is free to show elapsed time like the busy rows do
+            // so the label is free to show elapsed time like the busy rows do.
+            // The hook restarts the clock on entering the wait, so this reads
+            // as how long the prompt has been waiting for an answer.
             if let faFont = Self.faGlyphFont {
                 setGlyph(font: faFont, tooltip: "Waiting for permission")
                 glyph.stringValue = Theme.faHand

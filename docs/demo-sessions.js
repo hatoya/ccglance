@@ -59,14 +59,18 @@ function tick() {
     ],
   });
 
-  // Session 2: editing -> awaiting permission -> thinking, on a loop
+  // Session 2: editing -> awaiting permission -> thinking, on a loop. The clock
+  // restarts on both edges of the wait (see restartClock in the hook), so the
+  // timer resets when the prompt appears and again when the work resumes.
+  const loop = now - t;
   let s2;
   if (t < 8) {
-    s2 = { status: "tool", tool: "Editing", turnStartedAt: start - 8 };
+    // Still the work that resumed at t=16 of the previous cycle
+    s2 = { status: "tool", tool: "Editing", turnStartedAt: loop - 8 };
   } else if (t < 16) {
-    s2 = { status: "permission", message: "Awaiting permission", turnStartedAt: start - 8 };
+    s2 = { status: "permission", message: "Awaiting permission", turnStartedAt: loop + 8 };
   } else {
-    s2 = { status: "thinking", turnStartedAt: start - 8 };
+    s2 = { status: "thinking", turnStartedAt: loop + 16 };
   }
   write(IDS[1], { project: "my-webapp", title: "Fix login redirect", permissionMode: "acceptEdits", ...s2 });
 

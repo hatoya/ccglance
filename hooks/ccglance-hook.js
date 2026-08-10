@@ -336,6 +336,18 @@ function isSyncAgent(input) {
   return input.tool_name === "Task";
 }
 
+// The panel's clock measures the current state, not the whole turn: crossing
+// into or out of the waiting state restarts it, so a waiting row reads as how
+// long the prompt has been sitting there and the work that resumes afterwards
+// counts from zero again. Repeated events within one state (a Notification
+// following a PermissionRequest for the same prompt) leave it alone. A missing
+// clock — a state file written by an older hook version — is started here too.
+function restartClock(base, wasWaiting, now) {
+  if (base.turnStartedAt == null || (base.status === "permission") !== wasWaiting) {
+    base.turnStartedAt = now;
+  }
+}
+
 function pushAgent(base, input, now, description, extra) {
   const ti = input.tool_input || {};
   const agents = Array.isArray(base.agents) ? base.agents : [];
@@ -751,6 +763,8 @@ async function main() {
     else delete base.env;
   }
   base.updatedAt = now;
+  // Captured before any case rewrites status — restartClock compares against it
+  const wasWaiting = base.status === "permission";
 
   // Drop rows for background work that has finished since the last event.
   // Turn boundaries get the wide scan: rows survive them now (see
@@ -802,7 +816,8 @@ async function main() {
       // A steering message sent while the turn is still running must not be
       // mistaken for a new turn: clearing agents there erases rows for agents
       // that are still working, and restarting the clock hides how long the
-      // turn has really been going. turnActive tracks the boundary explicitly —
+      // work has really been going (restartClock only does that when the
+      // message answers a wait). turnActive tracks the boundary explicitly —
       // turnStartedAt can't, because PreToolUse and Notification also set it
       // (an idle "waiting for input" notification fires between turns).
       const newTurn = base.turnActive !== true;
@@ -814,6 +829,7 @@ async function main() {
         base.turnStartedAt = now;
         keepBackgroundRows(base);
       }
+      restartClock(base, wasWaiting, now);
       saveState(base);
       break;
     }
@@ -838,7 +854,7 @@ async function main() {
           pushTask(base, input, now, { kind: "monitor" });
         }
       }
-      if (base.turnStartedAt == null) base.turnStartedAt = now;
+      restartClock(base, wasWaiting, now);
       saveState(base);
       break;
 
@@ -928,6 +944,9 @@ async function main() {
           });
         }
       }
+      // The approval of a blocking tool (ExitPlanMode, AskUserQuestion) lands
+      // here — the wait is over, so the work that follows starts from zero.
+      restartClock(base, wasWaiting, now);
       saveState(base);
       if (isPrMutatingTool(input)) spawnPrFetch(sessionId, base.cwd);
       break;
@@ -940,7 +959,7 @@ async function main() {
     case "PermissionRequest":
       base.status = "permission";
       base.message = "Awaiting permission";
-      if (base.turnStartedAt == null) base.turnStartedAt = now;
+      restartClock(base, wasWaiting, now);
       saveState(base);
       break;
 
@@ -951,7 +970,7 @@ async function main() {
       base.message = /permission/i.test(msg)
         ? "Awaiting permission"
         : "Waiting for input";
-      if (base.turnStartedAt == null) base.turnStartedAt = now;
+      restartClock(base, wasWaiting, now);
       saveState(base);
       break;
     }
