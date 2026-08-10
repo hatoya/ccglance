@@ -2,6 +2,12 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.18.0
+
+- Permission-waiting rows now count the wait itself instead of the whole turn — the row shows how long the prompt has been open, and the work that follows an answered prompt starts again from zero. The wait is tracked explicitly with a `waitStartedAt` timestamp rather than derived from the status, because a subagent's tool events arrive under the parent's `session_id` and would otherwise rewind the timer the user is watching. Only the approved tool's own `PostToolUse` (matched on the real `tool_use_id`), a prompt that answers the wait, or the end of the turn closes it. State files written by an older hook have no `waitStartedAt`, and those rows fall back to the turn clock as before
+- Re-recorded the README demo GIF with the new wait clock — the demo's permission cycle now restarts the timer at both edges of the prompt
+- Removed the download-button image from the README; first install now points at either the Homebrew one-liner or the plain zip download
+
 ## v1.17.1
 
 - Rows now switch to the waiting look while a command's permission prompt is open in the Claude Desktop app. The wait was only picked up from the `Notification` event, which the desktop app does not fire for permission prompts (CLI only), so the row stayed on the orange "Running command" spark. The hook now handles the `PermissionRequest` event as well, and `install.js` registers it — the installer runs on every app launch, so existing users get the registration from the app update alone (a Claude Code session restart is needed for `settings.json` to take effect). The hook writes nothing to stdout, so the prompt itself is untouched
