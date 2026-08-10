@@ -358,6 +358,102 @@ function correlationId(input) {
   return typeof name === "string" && name ? `name:${name.slice(0, 120)}` : null;
 }
 
+// PermissionRequest carries no tool_use_id — Claude Code hands it to the hook
+// runner but leaves it out of the payload — so the id has to come from the
+// PreToolUse that ran moments earlier, as part of the same permission decision.
+// Calls still in flight are tracked per tool name; these caps bound what an
+// unmatched call can add to the state file.
+const MAX_PENDING_TOOLS = 8;
+const MAX_PENDING_PER_TOOL = 8;
+
+function pendingKey(input) {
+  const name = input.tool_name;
+  return typeof name === "string" && name ? name.slice(0, 120) : null;
+}
+
+// The state file is only ever written here, but it is read back from disk and
+// a truncated write must not throw on the next event.
+function pendingMap(base) {
+  const pending = base.pendingCalls;
+  if (pending == null || typeof pending !== "object" || Array.isArray(pending)) return null;
+  return pending;
+}
+
+function pendingIds(base, key) {
+  const pending = pendingMap(base);
+  if (key == null || pending == null) return null;
+  const ids = pending[key];
+  if (!Array.isArray(ids)) return null;
+  return ids.filter((x) => typeof x === "string" && x.startsWith("id:"));
+}
+
+function trackCall(base, input) {
+  const key = pendingKey(input);
+  const id = toolCallId(input.tool_use_id);
+  if (key == null || id == null) return;
+  if (pendingMap(base) == null) base.pendingCalls = {};
+  const pending = base.pendingCalls;
+  const ids = pendingIds(base, key) || [];
+  if (!ids.includes(id)) ids.push(id);
+  if (ids.length > MAX_PENDING_PER_TOOL) ids.splice(0, ids.length - MAX_PENDING_PER_TOOL);
+  pending[key] = ids;
+  const keys = Object.keys(pending);
+  if (keys.length > MAX_PENDING_TOOLS) {
+    for (const stale of keys.slice(0, keys.length - MAX_PENDING_TOOLS)) delete pending[stale];
+  }
+}
+
+function dropId(base, key, id) {
+  const ids = pendingIds(base, key);
+  if (ids == null) return;
+  const rest = ids.filter((x) => x !== id);
+  if (rest.length === ids.length) return;
+  if (rest.length) base.pendingCalls[key] = rest;
+  else delete base.pendingCalls[key];
+}
+
+function untrackCall(base, input) {
+  const id = toolCallId(input.tool_use_id);
+  if (id != null) dropId(base, pendingKey(input), id);
+}
+
+// A wait still bound to a call id when the next prompt arrives almost always
+// means that call was answered without ever reaching PostToolUse — it was
+// denied, or interrupted. Its entry is dead: left in, it makes every later
+// prompt for the same tool look ambiguous, and the whole turn falls back to
+// the tool name, which nothing closes. Denial followed by a corrected retry is
+// the common path, so this matters. The exception — a second prompt opening
+// over a live one — is the case permissionWaitId documents as accepted.
+function dropDeadCall(base) {
+  const dead = base.waitId;
+  const pending = pendingMap(base);
+  if (base.waitStartedAt == null || pending == null) return;
+  if (typeof dead !== "string" || !dead.startsWith("id:")) return;
+  for (const key of Object.keys(pending)) dropId(base, key, dead);
+}
+
+// Only an unambiguous match is used. Several calls of one tool in flight at
+// once (a subagent running Bash while the user is asked about another Bash)
+// give no way to tell which one the prompt belongs to, and guessing would let
+// the wrong call's PostToolUse close the wait and rewind the clock under the
+// user — so that case falls back to the tool name, which nothing can match.
+//
+// Two ways through remain, both needing a same-tool call in flight from a
+// subagent: this call's PreToolUse write can be lost to the unlocked fallback,
+// leaving the subagent's id as the only candidate; or the subagent's own
+// prompt can arrive while this one is open, and dropDeadCall reads this
+// still-live call as dead. Either way the subagent's PostToolUse ends the wait
+// early. Two prompts at once already break the row — one wait slot cannot hold
+// both, and any PostToolUse flips the status to thinking — so the cost is a
+// wait re-measured from zero, which is not worth a second correlation key on
+// every call.
+function permissionWaitId(base, input) {
+  dropDeadCall(base);
+  const ids = pendingIds(base, pendingKey(input));
+  if (ids && ids.length === 1) return ids[0];
+  return correlationId(input);
+}
+
 function beginWait(base, now, id) {
   // A prompt of a different kind, or of the same kind for a different tool
   // call, is a new wait — a denial followed by a fresh permission request is
@@ -836,6 +932,7 @@ async function main() {
       base.turnStartedAt = null;
       base.turnActive = false;
       clearWait(base);
+      delete base.pendingCalls;
       // SessionStart is not only a fresh start: source is one of startup /
       // resume / clear / compact, and resume and compact fire while background
       // work launched earlier is still running and still reporting into the
@@ -890,6 +987,9 @@ async function main() {
     }
 
     case "PreToolUse":
+      // Recorded before the branch: the PermissionRequest that may follow this
+      // call needs the id, and it names only the tool.
+      trackCall(base, input);
       // Tools that block on user input never trigger a Notification event
       // (AskUserQuestion shows its own picker; ExitPlanMode waits for plan
       // approval) — surface them as awaiting-input immediately.
@@ -1004,6 +1104,7 @@ async function main() {
       // permission prompt the user let through. Background tools reporting
       // into this session while the prompt is still up do not match.
       if (endsWait(base, input)) endWait(base, now);
+      untrackCall(base, input);
       saveState(base);
       if (isPrMutatingTool(input)) spawnPrFetch(sessionId, base.cwd);
       break;
@@ -1016,7 +1117,7 @@ async function main() {
     case "PermissionRequest":
       base.status = "permission";
       base.message = "Awaiting permission";
-      beginWait(base, now, correlationId(input));
+      beginWait(base, now, permissionWaitId(base, input));
       saveState(base);
       break;
 
@@ -1027,9 +1128,12 @@ async function main() {
       base.message = /permission/i.test(msg)
         ? "Awaiting permission"
         : "Waiting for input";
-      // No tool_use_id here — the PermissionRequest that precedes this on the
-      // CLI carries it, and an idle "waiting for input" wait has no tool at
-      // all (a prompt or the turn ending is what closes it).
+      // No tool_use_id here, and none on the PermissionRequest that precedes
+      // this on the CLI either — that one is correlated through the pending
+      // call it shares a tool name with, which this event cannot do because an
+      // idle "waiting for input" wait has no tool at all (a prompt or the turn
+      // ending is what closes it). Passing null leaves an id already bound by
+      // the PermissionRequest in place.
       beginWait(base, now, null);
       saveState(base);
       break;
@@ -1044,6 +1148,9 @@ async function main() {
       base.turnStartedAt = null;
       base.turnActive = false;
       clearWait(base);
+      // A denied call never reaches PostToolUse, so its entry can only be
+      // dropped here; nothing outlives the turn that asked for it.
+      delete base.pendingCalls;
       keepBackgroundRows(base);
       saveState(base);
       spawnPrFetch(sessionId, base.cwd);
