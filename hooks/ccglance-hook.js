@@ -347,9 +347,13 @@ function isSyncAgent(input) {
 // one tool share it. The tag records which of the two this is. Length-capped
 // like every other value that lands in the state file; it is compared, never
 // displayed.
+function toolCallId(id) {
+  return typeof id === "string" && id ? `id:${id.slice(0, 120)}` : null;
+}
+
 function correlationId(input) {
-  const id = input.tool_use_id;
-  if (typeof id === "string" && id) return `id:${id.slice(0, 120)}`;
+  const id = toolCallId(input.tool_use_id);
+  if (id) return id;
   const name = input.tool_name;
   return typeof name === "string" && name ? `name:${name.slice(0, 120)}` : null;
 }
@@ -377,8 +381,8 @@ function beginWait(base, now, id) {
 // rather than closed by whichever call of that tool happens to finish first.
 function endsWait(base, input) {
   if (base.waitStartedAt == null || base.waitId == null) return false;
-  const id = input.tool_use_id;
-  return typeof id === "string" && base.waitId === `id:${id}`;
+  const id = toolCallId(input.tool_use_id);
+  return id != null && base.waitId === id;
 }
 
 // The work that resumes after a wait starts from zero.
