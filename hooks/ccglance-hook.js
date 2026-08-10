@@ -336,16 +336,56 @@ function isSyncAgent(input) {
   return input.tool_name === "Task";
 }
 
-// The panel's clock measures the current state, not the whole turn: crossing
-// into or out of the waiting state restarts it, so a waiting row reads as how
-// long the prompt has been sitting there and the work that resumes afterwards
-// counts from zero again. Repeated events within one state (a Notification
-// following a PermissionRequest for the same prompt) leave it alone. A missing
-// clock — a state file written by an older hook version — is started here too.
-function restartClock(base, wasWaiting, now) {
-  if (base.turnStartedAt == null || (base.status === "permission") !== wasWaiting) {
-    base.turnStartedAt = now;
+// A wait gets its own clock, so a waiting row reads as how long the prompt has
+// been sitting there rather than how long the turn has been going. It is
+// tracked explicitly rather than derived from status changes: tool events from
+// a running subagent carry the parent's session_id (see the lock note above)
+// and rewrite status mid-wait, which would restart the clock every time one
+// landed.
+// What the wait can be closed by: the id of the blocking tool call, or its
+// name when the event carries no id. Same defensive typing as everywhere else —
+// the value is compared against later events, never displayed.
+function correlationId(input) {
+  const id = input.tool_use_id;
+  if (typeof id === "string" && id) return id;
+  const name = input.tool_name;
+  return typeof name === "string" && name ? name : null;
+}
+
+function beginWait(base, now, id) {
+  // A prompt of a different kind is a new wait; the Notification that follows
+  // a PermissionRequest for the same prompt is the same one.
+  if (base.waitStartedAt == null || base.waitKey !== base.message) {
+    base.waitStartedAt = now;
+    base.waitKey = base.message;
+    base.waitId = null;
   }
+  // Whichever of the two events carries a correlation key wins — the CLI
+  // raises both, and only one of them names the tool being approved.
+  if (id) base.waitId = id;
+}
+
+// Only the awaited tool ends the wait. A background subagent reporting into
+// this session hits PostToolUse constantly while the prompt is still up, and
+// ending the wait there would restart the clock under the user.
+function endsWait(base, input) {
+  if (base.waitStartedAt == null || base.waitId == null) return false;
+  return base.waitId === input.tool_use_id || base.waitId === input.tool_name;
+}
+
+// The work that resumes after a wait starts from zero.
+function endWait(base, now) {
+  if (base.waitStartedAt == null) return;
+  base.waitStartedAt = null;
+  base.waitKey = null;
+  base.waitId = null;
+  base.turnStartedAt = now;
+}
+
+function clearWait(base) {
+  base.waitStartedAt = null;
+  base.waitKey = null;
+  base.waitId = null;
 }
 
 function pushAgent(base, input, now, description, extra) {
@@ -725,6 +765,7 @@ async function main() {
     permissionMode: null,
     planApprovedAt: null,
     turnStartedAt: null,
+    waitStartedAt: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -763,8 +804,6 @@ async function main() {
     else delete base.env;
   }
   base.updatedAt = now;
-  // Captured before any case rewrites status — restartClock compares against it
-  const wasWaiting = base.status === "permission";
 
   // Drop rows for background work that has finished since the last event.
   // Turn boundaries get the wide scan: rows survive them now (see
@@ -784,6 +823,7 @@ async function main() {
       base.tool = null;
       base.turnStartedAt = null;
       base.turnActive = false;
+      clearWait(base);
       // SessionStart is not only a fresh start: source is one of startup /
       // resume / clear / compact, and resume and compact fire while background
       // work launched earlier is still running and still reporting into the
@@ -816,8 +856,7 @@ async function main() {
       // A steering message sent while the turn is still running must not be
       // mistaken for a new turn: clearing agents there erases rows for agents
       // that are still working, and restarting the clock hides how long the
-      // work has really been going (restartClock only does that when the
-      // message answers a wait). turnActive tracks the boundary explicitly —
+      // turn has really been going. turnActive tracks the boundary explicitly —
       // turnStartedAt can't, because PreToolUse and Notification also set it
       // (an idle "waiting for input" notification fires between turns).
       const newTurn = base.turnActive !== true;
@@ -829,7 +868,8 @@ async function main() {
         base.turnStartedAt = now;
         keepBackgroundRows(base);
       }
-      restartClock(base, wasWaiting, now);
+      // The prompt is the answer an idle wait was waiting for
+      endWait(base, now);
       saveState(base);
       break;
     }
@@ -842,6 +882,7 @@ async function main() {
         base.status = "permission";
         base.tool = null;
         base.message = INPUT_TOOLS[input.tool_name];
+        beginWait(base, now, correlationId(input));
       } else {
         base.status = "tool";
         base.tool = TOOL_LABELS[input.tool_name] || "Using tool";
@@ -854,7 +895,7 @@ async function main() {
           pushTask(base, input, now, { kind: "monitor" });
         }
       }
-      restartClock(base, wasWaiting, now);
+      if (base.turnStartedAt == null) base.turnStartedAt = now;
       saveState(base);
       break;
 
@@ -944,9 +985,10 @@ async function main() {
           });
         }
       }
-      // The approval of a blocking tool (ExitPlanMode, AskUserQuestion) lands
-      // here — the wait is over, so the work that follows starts from zero.
-      restartClock(base, wasWaiting, now);
+      // The approved tool ran: an ExitPlanMode/AskUserQuestion answer or a
+      // permission prompt the user let through. Background tools reporting
+      // into this session while the prompt is still up do not match.
+      if (endsWait(base, input)) endWait(base, now);
       saveState(base);
       if (isPrMutatingTool(input)) spawnPrFetch(sessionId, base.cwd);
       break;
@@ -959,7 +1001,7 @@ async function main() {
     case "PermissionRequest":
       base.status = "permission";
       base.message = "Awaiting permission";
-      restartClock(base, wasWaiting, now);
+      beginWait(base, now, correlationId(input));
       saveState(base);
       break;
 
@@ -970,7 +1012,10 @@ async function main() {
       base.message = /permission/i.test(msg)
         ? "Awaiting permission"
         : "Waiting for input";
-      restartClock(base, wasWaiting, now);
+      // No tool_use_id here — the PermissionRequest that precedes this on the
+      // CLI carries it, and an idle "waiting for input" wait has no tool at
+      // all (a prompt or the turn ending is what closes it).
+      beginWait(base, now, null);
       saveState(base);
       break;
     }
@@ -983,6 +1028,7 @@ async function main() {
       // plan cycle begins (permission mode transitions back to "plan").
       base.turnStartedAt = null;
       base.turnActive = false;
+      clearWait(base);
       keepBackgroundRows(base);
       saveState(base);
       spawnPrFetch(sessionId, base.cwd);
