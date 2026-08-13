@@ -2,6 +2,11 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.18.2
+
+- A permission prompt answered by typing a message instead of approving left the interrupted call's entry behind in the hook's pending-call table. That call never runs and never reaches `PostToolUse`, so the stale id sat there until the turn ended and made every later prompt for the same tool look ambiguous — those fell back to matching by tool name, which no `PostToolUse` can close, so the work resuming after the next approval kept counting from the old start instead of zero. The entry is now dropped as the prompt closes the wait
+- Conflicting PRs use the plain pull-request icon in orange rather than the forked-branch glyph. The fork shape read as a different kind of object at row size; the color alone carries the "needs a manual merge" signal against the green/gray/purple/red of the other PR states
+
 ## v1.18.1
 
 - The wait clock added in v1.18.0 only half worked for command permission prompts. `PermissionRequest` carries no `tool_use_id` — Claude Code hands it to the hook runner but leaves it out of the payload — so the wait was keyed by tool name alone and no `PostToolUse` could ever match it: the work that resumed after an approval kept counting from the turn start instead of zero, and a second prompt for the same tool inherited the first one's clock. The id is now taken from the `PreToolUse` that ran moments earlier as part of the same permission decision, and only when exactly one call of that tool is in flight — several at once give no way to tell which one the prompt belongs to, so those still fall back to the tool name rather than risk the wrong call's `PostToolUse` rewinding the clock. A denied call never reaches `PostToolUse`, so its entry is dropped when the next permission prompt arrives; left in, one denial made every later prompt for that tool ambiguous for the rest of the turn
