@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.18.3
+
+- A `Monitor` watch killed by its own timeout left its row on the panel until the session ended. A watch that exits on its own sends the same completion notification as any background command, so the reap clears it; a timed-out one sends a notification naming only the monitor's task id, and matching on that id is what the reap deliberately avoids — per-event progress notifications carry it too, so it would drop a live watch. The hook now records the watch's deadline when the call starts and sweeps expired rows on every event, which also survives the timeout notification scrolling past the transcript tail before the next hook runs. Every uncertain case rounds the deadline up rather than down — a row swept while its watch is live hides the running work the panel exists to show — so persistent watches get no deadline at all, and rows with none recorded (written before this field existed, or left by a denied persistent call that never reached `PostToolUse`) are bounded by the longest timeout the tool documents so a watch already stuck on the panel clears too
+
 ## v1.18.2
 
 - A permission prompt answered by typing a message instead of approving left the interrupted call's entry behind in the hook's pending-call table. That call never runs and never reaches `PostToolUse`, so the stale id sat there until the turn ended and made every later prompt for the same tool look ambiguous — those fell back to matching by tool name, which no `PostToolUse` can close, so the work resuming after the next approval kept counting from the old start instead of zero. The entry is now dropped as the prompt closes the wait
