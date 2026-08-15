@@ -1113,14 +1113,23 @@ async function main() {
         const res = input.tool_response;
         const mid = res && typeof res === "object" ? res.taskId : null;
         const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
-        if (typeof mid === "string" && mid && id && Array.isArray(base.tasks)) {
-          const entry = base.tasks.find((t) => t && t.id === id);
+        if (typeof mid === "string" && mid && id) {
+          const tasks = Array.isArray(base.tasks) ? base.tasks : [];
+          const entry = tasks.find((t) => t && t.id === id);
+          // The watch arms here, not at PreToolUse — which fires before the
+          // permission prompt, so a call left waiting at one longer than its
+          // own timeout carries an already-past deadline by the time it is
+          // approved.
+          const expiresAt = monitorExpiry(input, now);
           if (entry) {
             entry.monitorId = mid;
-            // The watch arms here, not at PreToolUse — which fires before the
-            // permission prompt, so a call left waiting at one longer than its
-            // own timeout would otherwise be swept the moment it was approved.
-            entry.expiresAt = monitorExpiry(input, now);
+            entry.expiresAt = expiresAt;
+          } else {
+            // The sweep at the top of this event already took the row for that
+            // same reason, and re-arming a row that is gone does nothing. A
+            // response carrying a task id is proof the watch is live, so put it
+            // back rather than leave the watch invisible for its whole run.
+            pushTask(base, input, now, { kind: "monitor", monitorId: mid, expiresAt });
           }
         }
       } else if (input.tool_name === "Bash") {
