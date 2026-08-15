@@ -554,6 +554,60 @@ function isMonitor(input) {
   return input.tool_name === "Monitor";
 }
 
+// A watch that exits on its own gets the same completion notification as any
+// background command (task id, tool_use_id, status), so the reap clears its
+// row. A watch killed by its own timeout does not: that notification names the
+// monitor's task id and nothing else, and matching on the task id is exactly
+// what isMonitor rules out — per-event progress notifications carry it too, so
+// the reap would drop a live watch. That left a timed-out watch with no event
+// that could ever remove it, and its row sat on the panel until SessionEnd.
+//
+// So the deadline is recorded up front instead. It also survives a timeout
+// notification scrolling past the transcript tail before the next hook runs,
+// which a text match on the notification would not.
+//
+// Every uncertain case here rounds the deadline up, never down: a row swept
+// while its watch is still live hides exactly the running work the panel
+// exists to show, which is worse than the lingering row this fixes.
+const MONITOR_TIMEOUT_DEFAULT_MS = 300000; // Monitor's own default
+// The longest timeout the tool documents — used only where a real deadline is
+// missing or unreadable, never to clamp one the caller actually gave.
+const MONITOR_TIMEOUT_MAX_MS = 3600000;
+
+function monitorExpiry(input, now) {
+  const ti = input.tool_input || {};
+  // Persistent watches have no timeout at all — only TaskStop or the session
+  // ending stops them, and both already drop the row.
+  if (ti.persistent === true) return null;
+  const ms = ti.timeout_ms;
+  if (ms === undefined) return now + MONITOR_TIMEOUT_DEFAULT_MS / 1000;
+  if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) return now + ms / 1000;
+  return now + MONITOR_TIMEOUT_MAX_MS / 1000;
+}
+
+// Rows the deadline never reached: ones written before expiresAt existed, and
+// persistent ones whose call was denied (PreToolUse recorded the row, no
+// PostToolUse ever confirmed the watch armed, and nothing else can drop a
+// null deadline). Both are bounded by the longest timeout the tool documents,
+// so a watch already stuck on the panel clears instead of sitting there for
+// the rest of the session.
+function monitorDeadline(task) {
+  if (typeof task.expiresAt === "number") return task.expiresAt;
+  if (task.expiresAt === null && task.monitorId) return null; // confirmed running, no timeout
+  if (typeof task.startedAt === "number") return task.startedAt + MONITOR_TIMEOUT_MAX_MS / 1000;
+  return null;
+}
+
+function dropExpiredMonitors(base, now) {
+  if (!Array.isArray(base.tasks) || base.tasks.length === 0) return;
+  base.tasks = base.tasks.filter((t) => {
+    if (!t) return false;
+    if (t.kind !== "monitor") return true;
+    const deadline = monitorDeadline(t);
+    return deadline == null || deadline > now;
+  });
+}
+
 // Without a description, label the row with the program name only. The raw
 // command would land both in the session file and on an always-on-top panel
 // that ends up in screenshots and screen shares, and background commands are
@@ -913,6 +967,10 @@ async function main() {
   }
   base.updatedAt = now;
 
+  // A timed-out watch is dead whatever the transcript still shows, and the
+  // check costs no I/O — every event sweeps it.
+  dropExpiredMonitors(base, now);
+
   // Drop rows for background work that has finished since the last event.
   // Turn boundaries get the wide scan: rows survive them now (see
   // keepBackgroundRows), so this is the last cheap moment to catch a
@@ -1013,7 +1071,7 @@ async function main() {
         } else if (isBackgroundBash(input)) {
           pushTask(base, input, now);
         } else if (isMonitor(input)) {
-          pushTask(base, input, now, { kind: "monitor" });
+          pushTask(base, input, now, { kind: "monitor", expiresAt: monitorExpiry(input, now) });
         }
       }
       if (base.turnStartedAt == null) base.turnStartedAt = now;
@@ -1057,7 +1115,13 @@ async function main() {
         const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
         if (typeof mid === "string" && mid && id && Array.isArray(base.tasks)) {
           const entry = base.tasks.find((t) => t && t.id === id);
-          if (entry) entry.monitorId = mid;
+          if (entry) {
+            entry.monitorId = mid;
+            // The watch arms here, not at PreToolUse — which fires before the
+            // permission prompt, so a call left waiting at one longer than its
+            // own timeout would otherwise be swept the moment it was approved.
+            entry.expiresAt = monitorExpiry(input, now);
+          }
         }
       } else if (input.tool_name === "Bash") {
         // Any Bash response carrying a backgroundTaskId is a live background
