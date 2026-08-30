@@ -50,6 +50,7 @@ struct SessionState: Codable {
     var agents: [AgentTask]?  // running subagents (optional: older files lack it)
     var tasks: [BackgroundTask]?  // running background commands (optional: older files lack it)
     var pr: PRInfo?           // fetched via gh by the hook's --fetch-pr mode
+    var prDismissed: [String]?  // URLs of the PRs dismissed in Claude Desktop (optional: older files lack it)
     var host: HostInfo?       // jump-to-session target (optional: older files lack it)
     var env: String?          // isolated-environment name (CLAUDE_CONFIG_DIR); recorded by the hook, not displayed
     var permissionMode: String?  // "plan" | "acceptEdits" | … (optional: older files lack it)
@@ -97,10 +98,12 @@ enum StateStore {
         }
     }
 
-    /// Look up the Desktop-app session titles (editable in Claude Desktop) for
-    /// a set of CLI session ids in a single store walk. Store layout:
+    /// Look up the Desktop-app facts for a set of CLI session ids in a single
+    /// store walk: the session title (editable in Claude Desktop) and the PRs
+    /// dismissed there. Store layout:
     ///   ~/Library/Application Support/Claude/claude-code-sessions/<ws>/<x>/local_<id>.json
-    ///   { "title": ..., "cliSessionId": ..., "bridgeSessionIds": [...] }
+    ///   { "title": ..., "cliSessionId": ..., "bridgeSessionIds": [...],
+    ///     "prs": [{ "url": "https://…/pull/25", "dismissed": true, ... }] }
     static var desktopStoreDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)
@@ -160,23 +163,56 @@ enum StateStore {
         return roots
     }
 
-    /// Parse one Desktop store file into the session ids it maps and its title.
-    private static func parseStoreFile(_ url: URL) -> (ids: [String], title: String)? {
+    /// What one Desktop store file knows about a session. Either half can be
+    /// missing: a file may carry a title but no PRs, or PRs but no title yet.
+    struct DesktopInfo {
+        var title: String?
+        var dismissedPRs: [String]?   // PR urls
+    }
+
+    /// Keep the dismissal list small and order-independent: it is compared on
+    /// every store walk (a reordered `prs` must not look like a change) and
+    /// rides along in a state file the app re-reads twice a second.
+    private static let dismissedPRLimit = 32
+
+    /// Parse one Desktop store file into the session ids it maps and the facts
+    /// it carries. `prs` is read only when the key is present, so a store
+    /// written before the Desktop app tracked PRs never blanks dismissals
+    /// resolved from another file.
+    private static func parseStoreFile(_ url: URL) -> (ids: [String], info: DesktopInfo)? {
         guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let raw = obj["title"] as? String else { return nil }
-        let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return nil }
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         var ids: [String] = []
         for key in ["cliSessionId", "sessionId", "id"] {
             if let v = obj[key] as? String { ids.append(v) }
         }
         if let bridged = obj["bridgeSessionIds"] as? [String] { ids += bridged }
-        return ids.isEmpty ? nil : (ids, title)
+        guard !ids.isEmpty else { return nil }
+        var info = DesktopInfo()
+        if let raw = obj["title"] as? String {
+            let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty { info.title = title }
+        }
+        // Closing a PR chip in Claude Desktop sets dismissed:true on its entry.
+        // Keyed by url, not number: one session can move between repos, and the
+        // url is what both sides always carry (the store entry and gh's output).
+        if let prs = obj["prs"] as? [[String: Any]] {
+            var urls: [String] = []
+            for pr in prs where (pr["dismissed"] as? Bool) == true {
+                guard let url = pr["url"] as? String, !urls.contains(url) else { continue }
+                urls.append(url)
+            }
+            info.dismissedPRs = urls.suffix(dismissedPRLimit).sorted()
+        }
+        return (ids, info)
     }
 
-    static func desktopTitles(for sessionIds: Set<String>) -> [String: String] {
-        var best: [String: (title: String, mtime: Date)] = [:]
+    /// Title and dismissals are resolved independently — each takes the newest
+    /// file that actually carries it — so a fresher file missing one half can
+    /// never blank what an older one still knows.
+    static func desktopInfo(for sessionIds: Set<String>) -> [String: DesktopInfo] {
+        var titles: [String: (value: String, mtime: Date)] = [:]
+        var dismissed: [String: (value: [String], mtime: Date)] = [:]
         for root in desktopStoreRoots() {
             guard let enumerator = FileManager.default.enumerator(
                 at: root,
@@ -184,22 +220,58 @@ enum StateStore {
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for case let url as URL in enumerator where url.pathExtension == "json" {
-                guard let (ids, title) = parseStoreFile(url) else { continue }
+                guard let (ids, info) = parseStoreFile(url) else { continue }
                 let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
                     .contentModificationDate ?? .distantPast
                 for id in ids where sessionIds.contains(id) {
-                    if best[id] == nil || mtime > best[id]!.mtime {
-                        best[id] = (title, mtime)
+                    if let title = info.title, titles[id] == nil || mtime > titles[id]!.mtime {
+                        titles[id] = (title, mtime)
+                    }
+                    if let prs = info.dismissedPRs, dismissed[id] == nil || mtime > dismissed[id]!.mtime {
+                        dismissed[id] = (prs, mtime)
                     }
                 }
             }
         }
-        return best.mapValues { $0.title }
+        var result: [String: DesktopInfo] = [:]
+        for (id, entry) in titles { result[id, default: DesktopInfo()].title = entry.value }
+        for (id, entry) in dismissed { result[id, default: DesktopInfo()].dismissedPRs = entry.value }
+        return result
     }
 
-    /// Re-resolve titles and persist them into the state files (hooks preserve
-    /// the field afterwards). Pass `only` to restrict to specific session ids.
-    static func refreshTitles(only: Set<String>? = nil) {
+    /// Store walks are serialized: the launch sweep, FSEvents, the untitled
+    /// poll and the menu can all fire at once, and a walk reads every store
+    /// file — overlapping them only multiplies the I/O.
+    private static let refreshQueue = DispatchQueue(label: "ccglance.desktop-info", qos: .utility)
+
+    /// Off-main entry point for every caller. `completion` runs on the main
+    /// queue once the state files are up to date.
+    static func enqueueDesktopInfoRefresh(only: Set<String>? = nil, completion: (() -> Void)? = nil) {
+        refreshQueue.async {
+            refreshDesktopInfo(only: only)
+            if let completion { DispatchQueue.main.async(execute: completion) }
+        }
+    }
+
+    /// One-shot catch-up for renames and PR dismissals made while the app was
+    /// down. Scoped to the sessions that can actually change on screen — a PR
+    /// icon to hide, or a name still missing — so a launch with nothing pending
+    /// walks no store at all. Delayed so it never races the watcher's first
+    /// callback for the same files.
+    static func sweepDesktopInfoAtLaunch() {
+        refreshQueue.asyncAfter(deadline: .now() + 3) {
+            let targets = Set(load()
+                .filter { $0.pr != nil || $0.title?.isEmpty != false }
+                .map { $0.sessionId })
+            guard !targets.isEmpty else { return }
+            refreshDesktopInfo(only: targets)
+        }
+    }
+
+    /// Re-resolve the Desktop-side facts and persist them into the state files
+    /// (hooks preserve the fields afterwards). Pass `only` to restrict to
+    /// specific session ids.
+    static func refreshDesktopInfo(only: Set<String>? = nil) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else { return }
         // State files are named <session_id>.json, so ids resolve without decoding
@@ -207,42 +279,72 @@ enum StateStore {
             .map { $0.deletingPathExtension().lastPathComponent })
         if let only { targets.formIntersection(only) }
         guard !targets.isEmpty else { return }
-        persist(titles: desktopTitles(for: targets))
+        persist(desktopInfo(for: targets))
     }
 
-    /// Re-resolve titles for the sessions referenced by specific store files
-    /// (FSEvents-changed paths). Delegates to refreshTitles so the store-wide
-    /// mtime-newest rule decides, exactly like the hook does — a touched stale
-    /// file must not win over a fresher one just because it was touched.
-    /// refreshTitles intersects with tracked sessions and returns early when
-    /// none match, so changes to untracked sessions cost only the parse here.
-    static func applyTitles(fromStoreFiles urls: [URL]) {
+    /// Re-resolve the sessions referenced by specific store files
+    /// (FSEvents-changed paths). Delegates to refreshDesktopInfo so the
+    /// store-wide mtime-newest rule decides, exactly like the hook does — a
+    /// touched stale file must not win over a fresher one just because it was
+    /// touched. refreshDesktopInfo intersects with tracked sessions and returns
+    /// early when none match, so changes to untracked sessions cost only the
+    /// parse here.
+    static func applyDesktopInfo(fromStoreFiles urls: [URL]) {
         var ids = Set<String>()
         for url in urls {
             guard let (fileIds, _) = parseStoreFile(url) else { continue }
             ids.formUnion(fileIds)
         }
         guard !ids.isEmpty else { return }
-        refreshTitles(only: ids)
+        enqueueDesktopInfoRefresh(only: ids)
     }
 
-    private static func persist(titles: [String: String]) {
-        guard !titles.isEmpty else { return }
+    private static func persist(_ info: [String: DesktopInfo]) {
+        guard !info.isEmpty else { return }
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else { return }
         for url in files where url.pathExtension == "json" {
-            guard let title = titles[url.deletingPathExtension().lastPathComponent] else { continue }
-            // Read right before writing: resolving titles takes a while and
-            // hooks may have rewritten (or removed) the file meanwhile — merge
-            // only the title into the freshest state to keep the race window tiny.
-            // Patch the raw JSON instead of re-encoding SessionState: the hooks
-            // own fields this app doesn't model, and a round-trip drops them.
+            guard let found = info[url.deletingPathExtension().lastPathComponent] else { continue }
+            // Read right before writing: resolving takes a while and hooks may
+            // have rewritten (or removed) the file meanwhile — merge only the
+            // resolved fields into the freshest state to keep the race window
+            // tiny. Patch the raw JSON instead of re-encoding SessionState: the
+            // hooks own fields this app doesn't model, and a round-trip drops
+            // them.
             guard let data = try? Data(contentsOf: url),
-                  var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  obj["title"] as? String != title else { continue }
-            obj["title"] = title
-            if let out = try? JSONSerialization.data(withJSONObject: obj) {
-                try? out.write(to: url, options: .atomic)
+                  var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+            var changed = false
+            if let title = found.title, obj["title"] as? String != title {
+                obj["title"] = title
+                changed = true
+            }
+            // The store is authoritative: an emptied list clears the field, so
+            // un-dismissing in Claude Desktop brings the PR icon back
+            if let dismissed = found.dismissedPRs {
+                let current = obj["prDismissed"] as? [String]
+                if dismissed.isEmpty {
+                    if current != nil {
+                        obj["prDismissed"] = nil
+                        changed = true
+                    }
+                } else if current != dismissed {
+                    obj["prDismissed"] = dismissed
+                    changed = true
+                }
+            }
+            guard changed, let out = try? JSONSerialization.data(withJSONObject: obj) else { continue }
+            try? out.write(to: url, options: .atomic)
+            // A hook's own read-modify-write can land between the read above and
+            // this write. A lost title heals on the next turn boundary (the hook
+            // re-resolves it), a lost dismissal never does — the hook doesn't
+            // read the Desktop store's PR list — so verify that one and retry once.
+            guard let dismissed = found.dismissedPRs, !dismissed.isEmpty,
+                  let fresh = try? Data(contentsOf: url),
+                  var reread = (try? JSONSerialization.jsonObject(with: fresh)) as? [String: Any],
+                  reread["prDismissed"] as? [String] != dismissed else { continue }
+            reread["prDismissed"] = dismissed
+            if let retry = try? JSONSerialization.data(withJSONObject: reread) {
+                try? retry.write(to: url, options: .atomic)
             }
         }
     }
@@ -262,14 +364,15 @@ enum StateStore {
 
 // MARK: - Desktop store watcher
 
-/// Watches the Claude Desktop session store with FSEvents so renames made in
-/// the Desktop app land on the panel immediately, without waiting for the next
-/// hook turn boundary. Event-driven: zero cost while nothing changes. The
-/// untitled-session poll in AppDelegate stays as a fallback for dropped events.
-final class TitleStoreWatcher {
+/// Watches the Claude Desktop session store with FSEvents so renames and PR
+/// dismissals made in the Desktop app land on the panel immediately, without
+/// waiting for the next hook turn boundary. Event-driven: zero cost while
+/// nothing changes. The untitled-session poll in AppDelegate stays as a
+/// fallback for dropped events.
+final class DesktopStoreWatcher {
     private var stream: FSEventStreamRef?
     private var watchedPaths: [String] = []
-    private let queue = DispatchQueue(label: "ccglance.title-watcher", qos: .utility)
+    private let queue = DispatchQueue(label: "ccglance.desktop-watcher", qos: .utility)
 
     /// (Re)subscribe to every Desktop store root. Idempotent: a no-op while the
     /// root set is unchanged, so callers can invoke it periodically to pick up
@@ -289,18 +392,18 @@ final class TitleStoreWatcher {
             version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
             retain: { info in
                 guard let info else { return nil }
-                _ = Unmanaged<TitleStoreWatcher>.fromOpaque(info).retain()
+                _ = Unmanaged<DesktopStoreWatcher>.fromOpaque(info).retain()
                 return info
             },
             release: { info in
                 guard let info else { return }
-                Unmanaged<TitleStoreWatcher>.fromOpaque(info).release()
+                Unmanaged<DesktopStoreWatcher>.fromOpaque(info).release()
             },
             copyDescription: nil
         )
         let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
             guard let info else { return }
-            let watcher = Unmanaged<TitleStoreWatcher>.fromOpaque(info).takeUnretainedValue()
+            let watcher = Unmanaged<DesktopStoreWatcher>.fromOpaque(info).takeUnretainedValue()
             var mustRescan = false
             for i in 0..<count where flags[i] & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0 {
                 mustRescan = true
@@ -338,12 +441,12 @@ final class TitleStoreWatcher {
     private func handle(paths: [String], mustRescan: Bool) {
         if mustRescan {
             // Kernel dropped events — fall back to the full store walk
-            StateStore.refreshTitles()
+            StateStore.enqueueDesktopInfoRefresh()
             return
         }
         let changed = paths.filter { $0.hasSuffix(".json") }.map { URL(fileURLWithPath: $0) }
         if !changed.isEmpty {
-            StateStore.applyTitles(fromStoreFiles: changed)
+            StateStore.applyDesktopInfo(fromStoreFiles: changed)
         }
     }
 }
@@ -1046,6 +1149,8 @@ final class SessionRowView: NSView {
     /// the plain idle dot (no PR / unknown state).
     private func prGlyph(for s: SessionState) -> (icon: String, color: NSColor, tooltip: String)? {
         guard let pr = s.pr, let state = pr.state else { return nil }
+        // Closing the PR chip in Claude Desktop hides it here too
+        if let url = pr.url, s.prDismissed?.contains(url) == true { return nil }
         let icon: String
         let color: NSColor
         let label: String
@@ -1342,7 +1447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var sessions: [SessionState] = []
     private var isRefreshingUntitled = false
     private var prFetchAttempts: [String: Double] = [:]   // sessionId → last --fetch-pr spawn
-    private let titleWatcher = TitleStoreWatcher()
+    private let desktopWatcher = DesktopStoreWatcher()
     private var lastProfilesMtime: Date?   // claude-desktop-switcher profiles dir, for hook catch-up
     private var installerInFlight = false
 
@@ -1396,8 +1501,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         updateChecker.start()
 
-        // Pick up session renames made in Claude Desktop as they happen
-        titleWatcher.start()
+        // Pick up session renames and PR dismissals made in Claude Desktop as
+        // they happen; sweep once for what changed while the app was down
+        desktopWatcher.start()
+        StateStore.sweepDesktopInfoAtLaunch()
 
         // 0.1s: crab animation; sessions reloaded every 0.5s
         animTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
@@ -1528,7 +1635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateMenuItem.isHidden = true
         menu.addItem(withTitle: "Check for updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshTitles), keyEquivalent: "")
+        menu.addItem(withTitle: "Refresh session names", action: #selector(refreshDesktopInfo), keyEquivalent: "")
         menu.addItem(withTitle: "Clear finished sessions", action: #selector(clearIdle), keyEquivalent: "")
         menu.addItem(withTitle: "Reinstall Claude Code hooks", action: #selector(reinstallHooks), keyEquivalent: "")
         menu.addItem(.separator())
@@ -1599,8 +1706,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // first Desktop run in one): resubscribe the FSEvents watcher.
             // No-op while the root set is unchanged; after a restart, sweep
             // once for renames that slipped through the resubscribe window.
-            if titleWatcher.start() {
-                DispatchQueue.global(qos: .utility).async { StateStore.refreshTitles() }
+            if desktopWatcher.start() {
+                StateStore.enqueueDesktopInfoRefresh()
             }
         }
 
@@ -1617,9 +1724,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             })
             if !untitled.isEmpty {
                 isRefreshingUntitled = true
-                DispatchQueue.global(qos: .utility).async { [weak self] in
-                    StateStore.refreshTitles(only: untitled)
-                    DispatchQueue.main.async { self?.isRefreshingUntitled = false }
+                StateStore.enqueueDesktopInfoRefresh(only: untitled) { [weak self] in
+                    self?.isRefreshingUntitled = false
                 }
             }
         }
@@ -1869,6 +1975,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let cwd = s.cwd else { continue }
             if !force {
                 guard let pr = s.pr, pr.state != "MERGED" else { continue }
+                // Dismissed in Claude Desktop: nothing to show, nothing to poll
+                if let url = pr.url, s.prDismissed?.contains(url) == true { continue }
                 let throttle: Double = now - s.updatedAt < 1800 ? 12 : 55
                 // Throttle on the last attempt, not just checkedAt: a failing
                 // gh (offline, expired auth, rate-limited) never advances
@@ -1888,11 +1996,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: Menu actions
 
-    @objc private func refreshTitles() {
-        StateStore.refreshTitles()
-        sessions = StateStore.load()
-        refreshPRStatuses(force: true)
-        tick()
+    @objc private func refreshDesktopInfo() {
+        // Off the main thread: the walk reads every Desktop store file
+        StateStore.enqueueDesktopInfoRefresh { [weak self] in
+            guard let self else { return }
+            self.sessions = StateStore.load()
+            self.refreshPRStatuses(force: true)
+            self.tick()
+        }
     }
 
     @objc private func clearIdle() { sessions = StateStore.clearAndReload(); tick() }
