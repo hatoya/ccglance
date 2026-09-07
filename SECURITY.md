@@ -21,4 +21,4 @@ You should receive an initial response within a week. Once a fix is released, th
 ## Scope notes
 
 - ccglance runs entirely locally: session state is written to `~/.claude/ccglance/` and never leaves the machine. The only network access is to GitHub (`api.github.com` / release assets) for the auto-updater, plus `gh pr view` runs against the repos of your own sessions.
-- The auto-updater verifies the release zip's SHA-256 against the published `.sha256` asset and requires the new bundle to carry a valid Developer ID signature from the project's team before installing.
+- The auto-updater verifies the release zip's SHA-256 against the published `.sha256` asset. On macOS it additionally requires the new bundle to carry a valid Developer ID signature from the project's team before installing. The Windows build is not code-signed, so there the SHA-256 check against the release's own checksum is the only integrity check; both files come from the same GitHub release over HTTPS.

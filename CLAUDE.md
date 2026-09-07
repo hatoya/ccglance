@@ -4,7 +4,7 @@ Swift/AppKitでmacOSネイティブアプリを構築する開発者。外部依
 
 ## プロジェクト概要
 
-Claude Codeのセッション状態を常時最前面のフローティングパネルに表示するmacOSアプリ。Claude Codeのライフサイクルhooks（SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / PermissionRequest / Stop / SessionEnd）が `~/.claude/ccglance/sessions/<session_id>.json` にセッション状態を書き込み、アプリが0.5秒ごとにディレクトリをポーリングして描画する。
+Claude Codeのセッション状態を常時最前面のフローティングパネルに表示するアプリ。macOS版（Swift/AppKit）とWindows版（C#/WPF、`windows/`）が同じhooksとセッションJSONを共有する。Claude Codeのライフサイクルhooks（SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / Notification / PermissionRequest / Stop / SessionEnd）が `~/.claude/ccglance/sessions/<session_id>.json` にセッション状態を書き込み、アプリが0.5秒ごとにディレクトリをポーリングして描画する。
 
 ## VOICEVOX音声通知
 
@@ -25,6 +25,8 @@ VOICEVOXのMCPサーバーを使用して、作業完了時に音声通知を行
 - 日本語で作業を記載
 - コードコメントは既存スタイルに合わせて英語で最小限に記載する（自明な処理へのコメントは書かない）
 - 対応完了後に `./build.sh` を実行し、ビルドが通ることを確認する（Swiftコンパイル・app生成・ad-hoc署名・zip作成まで検証される）
+- `windows/` を変更した場合は `dotnet build windows/ccglance.csproj -c Release` が通ることを確認する。macOSでは `EnableWindowsTargeting` によりコンパイルのみ可能で実行はできない（.NET SDKは `~/.dotnet` に `dotnet-install.sh` で導入済み。`export PATH="$HOME/.dotnet:$PATH"`）。実機での動作確認はWindows機かCI（`ci.yml`）に任せる
+- `Sources/CrabFrames.swift` を変更した場合は `node windows/tools/gen-crab-frames.js` で `windows/CrabFrames.cs` を再生成する（CIが `--check` で不一致を検出する）
 - hooks（`hooks/*.js`）を変更した場合は `node --check hooks/<file>.js` で構文確認し、`node hooks/test/run.js`（ネイティブ + win32疑似の2周）を通し、サンプルイベントJSONをstdinに流して動作確認する。セッションJSONのフィールドを増減した場合は `docs/session-schema.md` も更新する
 - `.claude/settings.json` と `.mcp.json` はコミット対象に含める。`.claude/settings.local.json` はローカル専用（Claude Codeが自動書き込みする場所）のためコミットしない。チームで共有したい許可は `settings.json` の `permissions.allow` に置く
 - `.claude/settings.local.json`の`allow`リストはABC順（アルファベット昇順）でソートする
@@ -85,10 +87,20 @@ hooks/
 ├── install.js           # ~/.claude/settings.json とCSWプロファイル等へのhook登録（既存hooksは保持、バックアップ作成）
 ├── uninstall.js         # 全登録先からccglanceのhooksのみを削除
 └── test/                # フィクスチャ再生テスト（run.js、preload.js、events/*.json）。フレームワーク不使用
-build.sh                 # ビルドスクリプト（VERSIONが唯一のバージョン情報源）
+windows/
+├── ccglance.csproj      # C#/WPF Windows版（net10.0-windows、単一exe・self-contained、NuGet依存なし）
+├── PanelWindow.xaml(.cs)  # パネル本体（main.swift の移植。非アクティブ化・DWM Acrylic・0.1sタイマー）
+├── Rows.cs / CrabView.cs / Theme.cs  # 行ビュー・カニ・配色（Mac版と1対1）
+├── SessionStore.cs / DesktopStore.cs # セッションJSON読込 / Claude Desktopストア連携
+├── HookInstaller.cs / UpdateChecker.cs  # hooks登録・--fetch-pr起動 / 自動アップデート
+├── CrabFrames.cs        # tools/gen-crab-frames.js が Sources/CrabFrames.swift から生成（手編集禁止）
+├── build.ps1            # ローカル用publish（VERSIONは build.sh から読む）
+└── tools/               # gen-crab-frames.js、make-ico.js
+build.sh                 # ビルドスクリプト（VERSIONが唯一のバージョン情報源。Windows版もここから読む）
 icon/                    # アプリアイコン
 docs/                    # README用アセット（demo.gif、social-preview.png等）と session-schema.md（セッションJSONの契約）
-.github/workflows/release.yml  # リリース公開時にzip+sha256をビルド・添付
+.github/workflows/release.yml  # タグpushで build-macos / build-windows / publish の3ジョブ
+.github/workflows/ci.yml       # PR時: hooksテスト（ubuntu + windows）とWindows版のビルド
 ```
 
 ## ビルド・リリース
@@ -102,6 +114,7 @@ docs/                    # README用アセット（demo.gif、social-preview.png
 - Xcode Command Line Tools（`xcode-select --install`）のみでビルド可能。Xcodeプロジェクトは使用しない
 - 成果物は `build/` 配下（gitignore済み）
 - 動作確認: `cp -R build/ccglance.app /Applications/ && open /Applications/ccglance.app`
+- Windows版: `windows\build.ps1`（Windows機）または `dotnet publish windows/ccglance.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o build/windows/ccglance`（Macでも生成可、実行は不可）
 
 ### リリース手順
 
@@ -110,22 +123,25 @@ docs/                    # README用アセット（demo.gif、social-preview.png
 普遍的な原則:
 
 - リリースの起点は `v<VERSION>` タグのpushのみ。GitHub Releaseを手動で公開してはいけない（リリースはimmutableのため、公開後に成果物を添付できない。公開済みタグは再利用不可で、やり直す場合は新バージョンのタグを切る）
-- タグpushで `release.yml` がビルド → ドラフトリリース作成（ノートはマージ済みPRから自動生成。カテゴリ分けは `.github/release.yml` のラベル設定）→ `ccglance.zip` と `ccglance.zip.sha256` を添付 → 公開まで自動で行う（両方ともアプリ内アップデーターに必須。zip名は `releases/latest/download/ccglance.zip` の固定リンクを維持するため無バージョン）
+- タグpushで `release.yml` が `build-macos`（macos-14）と `build-windows`（windows-latest）を並列実行し、`publish`（ubuntu）が両方の成果物を待ってドラフトリリース作成（ノートはマージ済みPRから自動生成。カテゴリ分けは `.github/release.yml` のラベル設定）→ `ccglance.zip` / `ccglance.zip.sha256` / `ccglance_windows.zip` / `ccglance_windows.zip.sha256` の4点を添付 → 公開まで自動で行う（各プラットフォームのペアがそれぞれのアプリ内アップデーターに必須。片方のビルドが失敗すると公開されない）
+- zip名は `releases/latest/download/<name>` の固定リンクを維持するため無バージョン。Windows版が `ccglance_windows.zip`（アンダースコア）なのは、旧Mac版アップデーター（v1.19.0以前）が「`.zip` をソートして先頭」を取るためで、ハイフンだとWindows版を掴んでしまう。**Windowsアセット名を `ccglance.` や `ccglance-` で始まる名前に変えてはいけない**
 - 署名用のGitHub Secretsが設定済みの場合、CIが自動でDeveloper ID署名 + notarize + stapleを行う。未設定ならad-hoc署名にフォールバックする（セットアップ手順は `docs/NOTARIZATION.md`）
 - `TAP_GITHUB_TOKEN` が設定済みの場合、CIがHomebrew tap（`hatoya/homebrew-tap` の `Casks/ccglance.rb`）のversion/sha256を自動更新する。未設定ならスキップされる（セットアップ手順は `docs/HOMEBREW.md`）
 
 ## 技術スタック
 
 - Swift / AppKit（macOS 12+、swiftcで直接ビルド、外部パッケージ依存なし。リリースバイナリはarm64のみでIntel Macは非対応）
-- Node.js hooks（外部npm依存ゼロ、CommonJS、`"use strict"`）
+- C# / WPF（Windows 10 1809+ / 11、x64。.NET 10、NuGet依存なし、`dotnet publish` の単一ファイル・self-contained。Authenticode署名なし。Acrylic背景はWindows 11 22H2以降のみで、それ未満は単色フォールバック）
+- Node.js hooks（外部npm依存ゼロ、CommonJS、`"use strict"`。macOS/Windows共通で `IS_WIN` 分岐は局所化する）
 - ad-hoc署名（Secrets設定時のみCIでDeveloper ID署名 + notarize。`docs/NOTARIZATION.md` 参照）
-- GitHub Actions（リリースビルド）
+- GitHub Actions（リリースビルド、PR時のhooksテストとWindows版ビルド）
 
 ## テスト
 
 アプリ側に自動テストは存在しない。hooksは `node hooks/test/run.js` でフィクスチャ再生テストが走る（一時ホームディレクトリにイベントを順に投入し、状態遷移・install/uninstallの登録を検証。ネイティブと `process.platform` をwin32に偽装した2周）。変更時は以下で動作確認する:
 
 - アプリ: `./build.sh && open build/ccglance.app` で起動確認
+- Windows版: `dotnet build windows/ccglance.csproj -c Release` でコンパイル確認。フォーカスを奪わないこと・Acrylic・Font Awesomeの描画・自動更新の差し替えはWindows実機でしか確認できないので、PR本文の未了項目として明記する
 - hooks: `node hooks/test/run.js` に加え、サンプルイベントをstdinに流して `~/.claude/ccglance/sessions/` への書き込みを確認
 
   ```bash
@@ -136,7 +152,8 @@ docs/                    # README用アセット（demo.gif、social-preview.png
 
 ## 注意事項
 
-- パネルはフォーカスを奪わない設計（クリックしても作業中アプリからフォーカスを奪わない）を壊さないこと
+- パネルはフォーカスを奪わない設計（クリックしても作業中アプリからフォーカスを奪わない）を壊さないこと。Windows版は `WS_EX_NOACTIVATE` + `WM_MOUSEACTIVATE→MA_NOACTIVATE` + 手動ドラッグ（`DragMove()` は使わない）でこれを実現している
+- Mac版のUI・挙動を変えたら `windows/` にも同じ変更を入れる（Rows.cs / PanelWindow.xaml.cs は main.swift と1対1で対応させてある）。セッションJSONのフィールドを増やす場合は `docs/session-schema.md` と両クライアントのモデルを更新する
 - セッションファイルは12時間更新が無いと自動削除される（クラッシュしたセッションの掃除）
 - hooksの登録先はユーザーの `~/.claude/settings.json`、claude-desktop-switcherの各プロファイル（`~/.context-switcher-claude/profiles/*/cli-data/settings.json`）、および `CLAUDE_CONFIG_DIR` が指す環境。install.js/uninstall.jsはccglance以外のhooksに影響を与えないこと
 - アプリ内アップデーターはzipのSHA-256を `.sha256` アセットと照合するため、リリースには両ファイルを必ずセットで添付する

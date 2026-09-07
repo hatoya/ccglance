@@ -1,0 +1,52 @@
+# PR checks for the parts that can't be verified from a Mac: the hooks on a
+# real Windows runner and the WPF client build. The macOS app is built
+# locally (build.sh) per CLAUDE.md, so no macOS job here.
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - "hooks/**"
+      - "windows/**"
+      - "Sources/CrabFrames.swift"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "hooks/**"
+      - "windows/**"
+      - "Sources/CrabFrames.swift"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  hooks:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        shell: bash
+        run: |
+          for f in hooks/*.js hooks/test/*.js windows/tools/*.js; do
+            node --check "$f"
+          done
+      - name: Fixture tests
+        run: node hooks/test/run.js
+
+  windows-client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Check generated sources
+        run: node windows/tools/gen-crab-frames.js --check
+      - name: Build
+        run: dotnet build windows/ccglance.csproj -c Release
