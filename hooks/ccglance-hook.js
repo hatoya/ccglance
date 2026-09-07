@@ -843,6 +843,7 @@ function windowsAppPath() {
   } catch {}
   candidates.push(
     [process.env.LOCALAPPDATA, "Programs", "ccglance", "ccglance.exe"],
+    [process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", "ccglance.exe"],
     [os.homedir(), "scoop", "apps", "ccglance", "current", "ccglance.exe"]
   );
   return existingPaths(candidates)[0] || null;

@@ -60,6 +60,21 @@ Requires the Xcode Command Line Tools (`xcode-select --install`).
 
 ## Install on Windows
 
+**winget:**
+
+```powershell
+winget install hatoya.ccglance
+```
+
+**Scoop:**
+
+```powershell
+scoop bucket add hatoya https://github.com/hatoya/scoop-bucket
+scoop install ccglance
+```
+
+**Manual download:**
+
 1. [Download the latest `ccglance_windows.zip`](https://github.com/hatoya/ccglance/releases/latest/download/ccglance_windows.zip) and extract it somewhere you can write to, for example `%LOCALAPPDATA%\Programs\ccglance` (the in-app updater replaces the files in place, so not `Program Files`).
 2. Run `ccglance.exe`. The release is not code-signed, so SmartScreen asks once: **More info → Run anyway**.
 
@@ -73,7 +88,7 @@ If the automatic hook setup doesn't work, run it manually from the folder you ex
 node ".\hooks\install.js"
 ```
 
-Not yet on Windows: the hover button that jumps to the session's terminal window, and pinning the panel to every virtual desktop (it shows on the desktop it was launched on). `winget` and Scoop packages are planned.
+Not yet on Windows: the hover button that jumps to the session's terminal window, and pinning the panel to every virtual desktop (it shows on the desktop it was launched on).
 
 ### Build from source on Windows
 
@@ -126,7 +141,7 @@ The app checks GitHub Releases for the latest version 5 seconds after launch and
 
 Clicking either one **updates in place**: it downloads the release zip → unpacks it → replaces the running `.app` → relaunches automatically. If the download or replacement fails, it rolls back and opens the release page in your browser (same for releases without a zip asset).
 
-On Windows the same flow downloads `ccglance_windows.zip`, verifies its SHA-256, renames the running `ccglance.exe` aside, copies the new files in and relaunches. There is no code signature to check, so keep the app in a folder you can write to.
+On Windows the same flow downloads `ccglance_windows.zip`, verifies its SHA-256, renames the running `ccglance.exe` aside, copies the new files in and relaunches. There is no code signature to check, so keep the app in a folder you can write to. winget and Scoop installs self-update the same way; `winget upgrade` / `scoop update` simply reinstall the version their manifest knows about.
 
 To check manually, use "Check for updates…" in the right-click menu.
 
@@ -145,7 +160,7 @@ Release procedure (for maintainers):
 1. Bump `VERSION` in `build.sh` and add the version's entry to `CHANGELOG.md` — list only what changed since the previous release
 2. Push a `v<VERSION>` tag (`git tag v<VERSION> && git push origin v<VERSION>`). The [release workflow](.github/workflows/release.yml) builds the app on a macOS runner and the Windows client on a Windows runner, creates a draft release with auto-generated notes (categorized by PR label via [`.github/release.yml`](.github/release.yml)), attaches `ccglance.zip`, `ccglance.zip.sha256`, `ccglance_windows.zip` and `ccglance_windows.zip.sha256`, and publishes it (each platform's pair is required by its in-app updater; if either build fails nothing is published; the workflow syncs the build version to the tag, so a missed bump still produces a correct zip)
 3. Releases are immutable: assets cannot be added after publishing and a published tag can never be reused, so never publish a release by hand before the assets are attached — a broken release must be re-cut under a new version
-4. The workflow then updates the [Homebrew tap](https://github.com/hatoya/homebrew-tap) cask to the new version (requires the `TAP_GITHUB_TOKEN` secret — see [docs/HOMEBREW.md](docs/HOMEBREW.md); skipped when unset)
+4. The workflow then updates the [Homebrew tap](https://github.com/hatoya/homebrew-tap) cask and the [Scoop bucket](https://github.com/hatoya/scoop-bucket) manifest to the new version (require the `TAP_GITHUB_TOKEN` / `SCOOP_BUCKET_TOKEN` secrets — see [docs/HOMEBREW.md](docs/HOMEBREW.md) and [docs/SCOOP.md](docs/SCOOP.md); skipped when unset), and opens a version-bump PR on [winget-pkgs](https://github.com/microsoft/winget-pkgs) (requires `WINGET_TOKEN` — see [docs/WINGET.md](docs/WINGET.md))
 
 `./build.sh` still works locally for development, and re-running the workflow via `workflow_dispatch` with the tag is the fallback if a tag push didn't produce a release. The zip name is unversioned so the `releases/latest/download/ccglance.zip` link always works. The repository to check can be changed via `UpdateChecker.repo` in `Sources/UpdateChecker.swift`.
 
@@ -157,7 +172,7 @@ node "/Applications/ccglance.app/Contents/Resources/uninstall.js"
 
 Then move the app to the Trash (or, for Homebrew installs, run `brew uninstall --cask ccglance` instead). Only ccglance's hooks are removed — from `~/.claude/settings.json` and from any claude-desktop-switcher profiles; any other hooks are left intact. If you registered the hooks into a custom `CLAUDE_CONFIG_DIR` environment, run the uninstaller from a shell where that variable is set so they get removed there too.
 
-On Windows, quit the app from its right-click menu, run the same script from the folder you extracted to, then delete that folder and `%APPDATA%\ccglance`:
+On Windows, quit the app from its right-click menu, run the same script from the folder you extracted to, then delete that folder and `%APPDATA%\ccglance` (or run `winget uninstall hatoya.ccglance` / `scoop uninstall ccglance` after the script):
 
 ```powershell
 node ".\hooks\uninstall.js"

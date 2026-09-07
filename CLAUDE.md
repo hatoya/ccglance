@@ -127,6 +127,7 @@ docs/                    # README用アセット（demo.gif、social-preview.png
 - zip名は `releases/latest/download/<name>` の固定リンクを維持するため無バージョン。Windows版が `ccglance_windows.zip`（アンダースコア）なのは、旧Mac版アップデーター（v1.19.0以前）が「`.zip` をソートして先頭」を取るためで、ハイフンだとWindows版を掴んでしまう。**Windowsアセット名を `ccglance.` や `ccglance-` で始まる名前に変えてはいけない**
 - 署名用のGitHub Secretsが設定済みの場合、CIが自動でDeveloper ID署名 + notarize + stapleを行う。未設定ならad-hoc署名にフォールバックする（セットアップ手順は `docs/NOTARIZATION.md`）
 - `TAP_GITHUB_TOKEN` が設定済みの場合、CIがHomebrew tap（`hatoya/homebrew-tap` の `Casks/ccglance.rb`）のversion/sha256を自動更新する。未設定ならスキップされる（セットアップ手順は `docs/HOMEBREW.md`）
+- `SCOOP_BUCKET_TOKEN` が設定済みの場合、CIがScoop bucket（`hatoya/scoop-bucket` の `bucket/ccglance.json`）のversion/url/hashを自動更新する（`docs/SCOOP.md`）。`WINGET_TOKEN` が設定済みの場合、同じジョブが `microsoft/winget-pkgs` に `hatoya.ccglance` の更新PRを出す（初回登録は手動。`docs/WINGET.md`）。どちらも未設定ならスキップされる
 
 ## 技術スタック
 

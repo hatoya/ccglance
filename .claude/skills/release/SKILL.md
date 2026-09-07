@@ -96,7 +96,7 @@ gh run list --repo hatoya/ccglance --workflow release.yml --limit 1 \
 gh run watch <run-id> --repo hatoya/ccglance --exit-status
 ```
 
-ジョブは `build-macos` → `build-windows`（並列）→ `publish` の3つ。`gh run view <run-id> --repo hatoya/ccglance`
+ジョブは `build-macos` → `build-windows`（並列）→ `publish` の3つ（tap / Scoop / winget の更新は `publish` 内のステップで、トークン未設定時はスキップ）。`gh run view <run-id> --repo hatoya/ccglance`
 でどのジョブが落ちたか確認する。失敗した場合は原因を調査・修正し、リリースの公開状態で対応を分ける:
 
 - **公開前の失敗**（どちらかのビルド失敗でドラフトのまま or リリース未作成）: 同じタグで再実行できる。
@@ -105,18 +105,22 @@ gh run watch <run-id> --repo hatoya/ccglance --exit-status
 - **公開後（`isDraft: false`）の失敗**: 公開済みリリースはimmutableで修正できないため、
   新バージョンのタグでやり直す
 
-### 9. リリース検証（3点セット）
+### 9. リリース検証（4点セット）
 
 ```bash
 gh release view v<VERSION> --repo hatoya/ccglance \
   --json isDraft,tagName,assets --jq '{isDraft, tagName, assets: [.assets[].name]}'
 gh api repos/hatoya/homebrew-tap/contents/Casks/ccglance.rb \
   --jq '.content' | base64 -d | grep -E 'version|sha256'
+gh api repos/hatoya/scoop-bucket/contents/bucket/ccglance.json \
+  --jq '.content' | base64 -d | jq '{version, hash}'
 ```
 
 - リリースが公開済み（`isDraft: false`）
 - `ccglance.zip` / `ccglance.zip.sha256` / `ccglance_windows.zip` / `ccglance_windows.zip.sha256` の**4点全て**が添付されている（各プラットフォームのアプリ内アップデーターに必須）
 - Homebrew tapのcaskが新バージョンとzipのsha256に更新されている
   （`TAP_GITHUB_TOKEN` 未設定時はスキップされるので、その場合は未更新でも正常）
+- Scoop bucketのマニフェストが新バージョン・新hashに更新されている（`SCOOP_BUCKET_TOKEN` 未設定時はスキップ）。
+  winget-pkgsへの更新PRは `WINGET_TOKEN` 設定時のみ作成され、マージはwinget側で行われるので検証対象外
 
-3点そろったらリリース完了。VOICEVOXが起動していれば完了を音声通知する。
+4点そろったらリリース完了。VOICEVOXが起動していれば完了を音声通知する。

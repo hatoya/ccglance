@@ -206,6 +206,7 @@ yet.
 - Windows: the hook resolves the executable in this order and spawns it
   detached and hidden: `CCGLANCE_EXE`, the path in
   `~/.claude/ccglance/app-path.txt`, `%LOCALAPPDATA%\Programs\ccglance\ccglance.exe`,
+  `%LOCALAPPDATA%\Microsoft\WinGet\Links\ccglance.exe` (winget portable alias),
   `%USERPROFILE%\scoop\apps\ccglance\current\ccglance.exe`. The Windows app
   writes its own absolute path to `app-path.txt` (UTF-8, one line) at every
   start; a relative path or one not ending in `.exe` is ignored.

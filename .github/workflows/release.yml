@@ -158,6 +158,8 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
       HAS_TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
+      HAS_SCOOP_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN != '' }}
+      HAS_WINGET_TOKEN: ${{ secrets.WINGET_TOKEN != '' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -235,3 +237,48 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "ccglance $VERSION"
           git push
+
+      # Same idea for the Scoop bucket (hatoya/scoop-bucket, bucket/ccglance.json):
+      # opt-in via SCOOP_BUCKET_TOKEN. Setup guide: docs/SCOOP.md
+      - name: Update Scoop bucket
+        if: ${{ env.HAS_SCOOP_TOKEN == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          VERSION="${TAG#v}"
+          SHA256=$(cut -d' ' -f1 windows/ccglance_windows.zip.sha256)
+          gh auth setup-git
+          git clone --depth 1 https://github.com/hatoya/scoop-bucket.git "$RUNNER_TEMP/scoop-bucket"
+          MANIFEST="$RUNNER_TEMP/scoop-bucket/bucket/ccglance.json"
+          jq --arg v "$VERSION" --arg h "$SHA256" \
+            '.version = $v
+             | .url = "https://github.com/hatoya/ccglance/releases/download/v\($v)/ccglance_windows.zip"
+             | .hash = $h' "$MANIFEST" > "$MANIFEST.tmp"
+          mv "$MANIFEST.tmp" "$MANIFEST"
+          # jq rewrites the whole file; make sure the fields landed
+          if [ "$(jq -r .version "$MANIFEST")" != "$VERSION" ] || [ "$(jq -r .hash "$MANIFEST")" != "$SHA256" ]; then
+            echo "Scoop manifest update failed: $MANIFEST" >&2
+            exit 1
+          fi
+          cd "$RUNNER_TEMP/scoop-bucket"
+          if git diff --quiet; then
+            echo "Scoop manifest already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "ccglance $VERSION"
+          git push
+
+      # winget: opens a version-bump PR against microsoft/winget-pkgs from the
+      # token owner's fork (the action runs Komac, so any runner OS works).
+      # The package must already exist there — the first submission is
+      # manual, see docs/WINGET.md. The release is public by this point.
+      - name: Submit winget manifest
+        if: ${{ env.HAS_WINGET_TOKEN == 'true' }}
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: hatoya.ccglance
+          installers-regex: 'ccglance_windows\.zip$'
+          release-tag: ${{ env.TAG }}
+          token: ${{ secrets.WINGET_TOKEN }}
