@@ -207,32 +207,73 @@ enum StateStore {
         return (ids, info)
     }
 
+    /// What a store walk remembers about one file, so the next walk re-parses
+    /// only files whose (mtime, size) changed. The store is hundreds of MB of
+    /// JSON (one file per Desktop session, ~450KB each, rarely pruned); parsing
+    /// it whole on every walk built a >1GB object tree per pass, and the freed
+    /// pages never fully returned to the OS — the footprint kept ~100MB of
+    /// fragmented heap around for the life of the process. Keyed by path;
+    /// touched only on refreshQueue.
+    private struct StoreFileEntry {
+        var mtime: Date
+        var size: Int
+        var ids: [String]      // empty when the file failed to parse
+        var info: DesktopInfo
+    }
+    private static var storeCache: [String: StoreFileEntry] = [:]
+
     /// Title and dismissals are resolved independently — each takes the newest
     /// file that actually carries it — so a fresher file missing one half can
     /// never blank what an older one still knows.
     static func desktopInfo(for sessionIds: Set<String>) -> [String: DesktopInfo] {
+        dispatchPrecondition(condition: .onQueue(refreshQueue))
         var titles: [String: (value: String, mtime: Date)] = [:]
         var dismissed: [String: (value: [String], mtime: Date)] = [:]
+        // Rebuilt from scratch each walk so deleted files drop out
+        var nextCache: [String: StoreFileEntry] = [:]
+        nextCache.reserveCapacity(storeCache.count)
         for root in desktopStoreRoots() {
             guard let enumerator = FileManager.default.enumerator(
                 at: root,
-                includingPropertiesForKeys: [.contentModificationDateKey],
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
                 options: [.skipsHiddenFiles]
             ) else { continue }
+            // One pool per file: JSONSerialization returns autoreleased trees,
+            // and a dispatch block drains its pool only when it returns — the
+            // whole store's worth of trees was alive at once before this.
             for case let url as URL in enumerator where url.pathExtension == "json" {
-                guard let (ids, info) = parseStoreFile(url) else { continue }
-                let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
-                    .contentModificationDate ?? .distantPast
-                for id in ids where sessionIds.contains(id) {
-                    if let title = info.title, titles[id] == nil || mtime > titles[id]!.mtime {
-                        titles[id] = (title, mtime)
+                autoreleasepool {
+                    let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    let mtime = values?.contentModificationDate ?? .distantPast
+                    let size = values?.fileSize ?? -1
+                    let path = url.path
+                    let entry: StoreFileEntry
+                    if values != nil, let cached = storeCache[path],
+                       cached.mtime == mtime, cached.size == size {
+                        entry = cached
+                    } else if let (ids, info) = parseStoreFile(url) {
+                        entry = StoreFileEntry(mtime: mtime, size: size, ids: ids, info: info)
+                    } else {
+                        // Remembered too, so an unparsable file (a foreign
+                        // schema, a truncated write) isn't re-read every walk;
+                        // a completed write changes mtime/size and re-parses.
+                        entry = StoreFileEntry(mtime: mtime, size: size, ids: [], info: DesktopInfo())
                     }
-                    if let prs = info.dismissedPRs, dismissed[id] == nil || mtime > dismissed[id]!.mtime {
-                        dismissed[id] = (prs, mtime)
+                    // A file whose stat failed has nothing reliable to key
+                    // it by — parsed every walk, as before
+                    if values != nil { nextCache[path] = entry }
+                    for id in entry.ids where sessionIds.contains(id) {
+                        if let title = entry.info.title, titles[id] == nil || mtime > titles[id]!.mtime {
+                            titles[id] = (title, mtime)
+                        }
+                        if let prs = entry.info.dismissedPRs, dismissed[id] == nil || mtime > dismissed[id]!.mtime {
+                            dismissed[id] = (prs, mtime)
+                        }
                     }
                 }
             }
         }
+        storeCache = nextCache
         var result: [String: DesktopInfo] = [:]
         for (id, entry) in titles { result[id, default: DesktopInfo()].title = entry.value }
         for (id, entry) in dismissed { result[id, default: DesktopInfo()].dismissedPRs = entry.value }
@@ -292,8 +333,10 @@ enum StateStore {
     static func applyDesktopInfo(fromStoreFiles urls: [URL]) {
         var ids = Set<String>()
         for url in urls {
-            guard let (fileIds, _) = parseStoreFile(url) else { continue }
-            ids.formUnion(fileIds)
+            autoreleasepool {
+                guard let (fileIds, _) = parseStoreFile(url) else { return }
+                ids.formUnion(fileIds)
+            }
         }
         guard !ids.isEmpty else { return }
         enqueueDesktopInfoRefresh(only: ids)
@@ -832,6 +875,19 @@ final class GroupHeaderView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 }
 
+/// stringValue/textColor setters don't short-circuit on an equal value: each
+/// call invalidates the intrinsic size and re-measures the text, and the 0.1s
+/// tick rewrites every label — most of them with what they already show.
+extension NSTextField {
+    func setText(_ value: String) {
+        if stringValue != value { stringValue = value }
+    }
+
+    func setColor(_ value: NSColor) {
+        if textColor != value { textColor = value }
+    }
+}
+
 /// Jump button: accepts the first click even though the panel is never key,
 /// and is recognized by RootView's cursor tracking to show a pointing hand.
 final class HoverButton: NSButton {
@@ -1038,7 +1094,7 @@ final class SessionRowView: NSView {
         } else {
             name = "Session " + String(s.sessionId.prefix(8))
         }
-        projectLabel.stringValue = name
+        projectLabel.setText(name)
 
         func elapsedString(since start: Double?) -> String {
             guard let start else { return "" }
@@ -1052,8 +1108,8 @@ final class SessionRowView: NSView {
         if mode != modeRaw {
             modeRaw = mode
             let badge = Self.modeBadgeInfo(mode)
-            modeBadge.stringValue = badge.text
-            modeBadge.textColor = badge.color
+            modeBadge.setText(badge.text)
+            modeBadge.setColor(badge.color)
             modeBadge.toolTip = badge.text.isEmpty ? nil : "Permission mode: \(mode ?? "")"
             badgeGap?.constant = badge.text.isEmpty ? 0 : -6
         }
@@ -1061,9 +1117,9 @@ final class SessionRowView: NSView {
         let approved = !DisplayPrefs.hidePlan && s.planApprovedAt != nil
         if approved != planShown {
             planShown = approved
-            planBadge.stringValue = approved
-                ? (Self.faGlyphFont != nil ? Theme.faCheck : "✓") : ""
-            planBadge.textColor = Theme.prOpen
+            planBadge.setText(approved
+                ? (Self.faGlyphFont != nil ? Theme.faCheck : "✓") : "")
+            planBadge.setColor(Theme.prOpen)
             planBadge.toolTip = approved ? "Plan approved" : nil
             planGap?.constant = approved ? -6 : 0
         }
@@ -1071,16 +1127,16 @@ final class SessionRowView: NSView {
         switch s.status {
         case "thinking", "tool":
             setGlyph(font: Self.systemGlyphFont, tooltip: nil)
-            glyph.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
-            glyph.textColor = Theme.orange
+            glyph.setText(Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count])
+            glyph.setColor(Theme.orange)
             // Elapsed time when available; fall back to status name when it isn't
             let elapsed = DisplayPrefs.hideTime ? "" : elapsedString(since: s.turnStartedAt)
             if elapsed.isEmpty {
-                rightLabel.stringValue = s.status == "thinking" ? "Thinking…" : (s.tool ?? "Using tool")
+                rightLabel.setText(s.status == "thinking" ? "Thinking…" : (s.tool ?? "Using tool"))
             } else {
-                rightLabel.stringValue = elapsed
+                rightLabel.setText(elapsed)
             }
-            rightLabel.textColor = .labelColor
+            rightLabel.setColor(.labelColor)
             highlight.layer?.backgroundColor = nil
         case "permission":
             // The hand glyph and the pulsing highlight carry the waiting state,
@@ -1090,29 +1146,29 @@ final class SessionRowView: NSView {
             // turn (older hooks write no waitStartedAt — fall back to the turn).
             if let faFont = Self.faGlyphFont {
                 setGlyph(font: faFont, tooltip: "Waiting for permission")
-                glyph.stringValue = Theme.faHand
+                glyph.setText(Theme.faHand)
             } else {
                 setGlyph(font: Self.systemGlyphFont, tooltip: "Waiting for permission")
-                glyph.stringValue = "●"
+                glyph.setText("●")
             }
-            glyph.textColor = Theme.yellow
-            rightLabel.stringValue = DisplayPrefs.hideTime
-                ? "" : elapsedString(since: s.waitStartedAt ?? s.turnStartedAt)
-            rightLabel.textColor = .labelColor
+            glyph.setColor(Theme.yellow)
+            rightLabel.setText(DisplayPrefs.hideTime
+                ? "" : elapsedString(since: s.waitStartedAt ?? s.turnStartedAt))
+            rightLabel.setColor(.labelColor)
             let pulse = 0.10 + 0.10 * (0.5 + 0.5 * sin(now * 4))
             highlight.layer?.backgroundColor = Theme.yellow.withAlphaComponent(pulse).cgColor
         default: // idle
             if let pr = prGlyph(for: s), let faFont = Self.faGlyphFont {
                 setGlyph(font: faFont, tooltip: pr.tooltip)
-                glyph.stringValue = pr.icon
-                glyph.textColor = pr.color
+                glyph.setText(pr.icon)
+                glyph.setColor(pr.color)
             } else {
                 setGlyph(font: Self.systemGlyphFont, tooltip: nil)
-                glyph.stringValue = "●"
-                glyph.textColor = Theme.idle
+                glyph.setText("●")
+                glyph.setColor(Theme.idle)
             }
-            rightLabel.stringValue = "Idle"
-            rightLabel.textColor = .tertiaryLabelColor
+            rightLabel.setText("Idle")
+            rightLabel.setColor(.tertiaryLabelColor)
             highlight.layer?.backgroundColor = nil
         }
     }
@@ -1280,13 +1336,13 @@ final class ChildRowView: NSView {
             name = (task.description?.isEmpty == false) ? task.description! : fallback
             startedAt = task.startedAt
         }
-        spark.stringValue = Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count]
-        descLabel.stringValue = name
+        spark.setText(Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count])
+        descLabel.setText(name)
         if let start = startedAt {
             let sec = max(0, Int(now - start))
-            timeLabel.stringValue = sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s"
+            timeLabel.setText(sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s")
         } else {
-            timeLabel.stringValue = ""
+            timeLabel.setText("")
         }
     }
 }
