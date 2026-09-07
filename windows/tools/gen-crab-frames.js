@@ -40,7 +40,8 @@ const out = lines.join("\n");
 if (process.argv.includes("--check")) {
   let current = null;
   try {
-    current = fs.readFileSync(DEST, "utf8");
+    // Git on Windows may check the file out with CRLF
+    current = fs.readFileSync(DEST, "utf8").replace(/\r\n/g, "\n");
   } catch {}
   if (current !== out) {
     console.error(`${DEST} is out of date; run node windows/tools/gen-crab-frames.js`);
