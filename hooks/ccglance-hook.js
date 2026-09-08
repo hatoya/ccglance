@@ -24,6 +24,7 @@ const TOOL_LABELS = {
   Task: "Running agent",
   Agent: "Running agent",
   Monitor: "Monitoring",
+  CronCreate: "Scheduling",
 };
 
 // Subagent-spawning tools ("Task" classically, "Agent" in newer builds)
@@ -608,6 +609,193 @@ function dropExpiredMonitors(base, now) {
   });
 }
 
+// Scheduled prompts (CronCreate) are background work of a third kind: nothing
+// runs until the fire time, and when it does the harness enqueues the prompt
+// as an ordinary user turn — no tool call, no <task-notification>, nothing the
+// reap could match. So the row carries the fire time itself, computed from the
+// cron expression, and is settled against the clock instead: a one-shot job is
+// gone once it has fired, a recurring one advances to its next match.
+//
+// The clock cannot be exact. Jobs fire only while the REPL is idle, so a fire
+// time that falls inside a long turn is honored late; the scheduler also adds
+// jitter (one-shots on :00/:30 up to 90 s early, anything up to 15 min late).
+// A new turn is the reliable signal — the fire *is* a new turn, and a job past
+// its time has nothing to wait for but idleness — so that boundary settles at
+// the early edge. Any other event settles only past the late edge, as a
+// fallback for a fire the hook never saw as a turn (rounded up, like the
+// monitor deadline above: a row dropped while its job is still pending hides
+// exactly what the panel exists to show).
+const CRON_EARLY_S = 90;
+const CRON_LATE_S = 15 * 60;
+const CRON_LIFETIME_S = 7 * 86400; // recurring jobs auto-expire after 7 days
+
+const CRON_MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+const CRON_DAYS = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+// One 5-field cron field ("*", "5", "1-5", "*/10", "1,15", "mon-fri") to the
+// set of values it matches; null when it is not a field this parser reads.
+function cronField(spec, min, max, names) {
+  const set = new Set();
+  const val = (s) => {
+    if (/^\d+$/.test(s)) return Number(s);
+    const n = names ? names[s.toLowerCase()] : undefined;
+    return n === undefined ? NaN : n;
+  };
+  for (const part of spec.split(",")) {
+    const m = /^(\*|[a-z]{3}|\d+)(?:-([a-z]{3}|\d+))?(?:\/(\d+))?$/i.exec(part);
+    if (!m) return null;
+    let lo, hi;
+    if (m[1] === "*") {
+      lo = min;
+      hi = max;
+    } else {
+      lo = val(m[1]);
+      hi = m[2] !== undefined ? val(m[2]) : m[3] !== undefined ? max : lo;
+    }
+    const step = m[3] !== undefined ? Number(m[3]) : 1;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < min || hi > max || lo > hi || step < 1) {
+      return null;
+    }
+    for (let v = lo; v <= hi; v += step) set.add(v);
+  }
+  return set;
+}
+
+function parseCron(expr) {
+  if (typeof expr !== "string") return null;
+  const f = expr.trim().split(/\s+/);
+  if (f.length !== 5) return null;
+  const minute = cronField(f[0], 0, 59);
+  const hour = cronField(f[1], 0, 23);
+  const dom = cronField(f[2], 1, 31);
+  const month = cronField(f[3], 1, 12, CRON_MONTHS);
+  const dow = cronField(f[4], 0, 7, CRON_DAYS);
+  if (!minute || !hour || !dom || !month || !dow) return null;
+  if (dow.has(7)) {
+    dow.delete(7);
+    dow.add(0);
+  }
+  // A day field is unrestricted when it covers every value — the scheduler's
+  // own rule, not Vixie's "starts with *" — and when both day fields are
+  // restricted a day matches if either one does
+  return { minute, hour, dom, month, dow, anyDom: dom.size === 31, anyDow: dow.size === 7 };
+}
+
+// First match strictly after `afterSec`, on a minute boundary, in local time
+// (the expression is local time by the tool's contract). Fields are checked
+// coarse to fine so a miss skips the whole month/day/hour at once; the search
+// gives up past 400 days, which no 5-field expression with a valid day needs.
+function nextCronFire(expr, afterSec) {
+  const c = parseCron(expr);
+  if (!c) return null;
+  const d = new Date((Math.floor(afterSec / 60) + 1) * 60000);
+  const limit = d.getTime() + 400 * 86400000;
+  let guard = 0;
+  while (d.getTime() < limit && guard++ < 100000) {
+    if (!c.month.has(d.getMonth() + 1)) {
+      d.setMonth(d.getMonth() + 1, 1);
+      d.setHours(0, 0, 0, 0);
+      continue;
+    }
+    const domOk = c.dom.has(d.getDate());
+    const dowOk = c.dow.has(d.getDay());
+    const dayOk = c.anyDom ? dowOk : c.anyDow ? domOk : domOk || dowOk;
+    if (!dayOk) {
+      d.setDate(d.getDate() + 1);
+      d.setHours(0, 0, 0, 0);
+      continue;
+    }
+    if (!c.hour.has(d.getHours())) {
+      d.setHours(d.getHours() + 1, 0, 0, 0);
+      continue;
+    }
+    if (!c.minute.has(d.getMinutes())) {
+      d.setMinutes(d.getMinutes() + 1, 0, 0);
+      continue;
+    }
+    return d.getTime() / 1000;
+  }
+  return null;
+}
+
+function isCronCreate(input) {
+  return input.tool_name === "CronCreate";
+}
+
+// The prompt is what the job will do, so its first line/sentence is the row
+// label. cleanLabel caps the length; the split keeps a multi-step prompt from
+// showing as its first 120 characters of run-on text.
+function cronLabel(prompt) {
+  if (typeof prompt !== "string") return null;
+  const head = prompt.split(/\r?\n|。|[.!?](?:\s|$)/)[0];
+  return cleanLabel(head) || cleanLabel(prompt);
+}
+
+function cronRow(input, now, extra) {
+  const ti = input.tool_input || {};
+  const fireAt = nextCronFire(ti.cron, now);
+  // An expression this parser cannot read gives no fire time, and a row with
+  // none could only leave by CronDelete or SessionEnd — skip it rather than
+  // risk a stuck row.
+  if (fireAt == null) return null;
+  return Object.assign(
+    {
+      kind: "cron",
+      recurring: ti.recurring !== false,
+      // Session-only jobs die with the process (today every job does; the
+      // flag is recorded so a build that honors it keeps the row on resume)
+      durable: ti.durable === true,
+      cronExpr: cleanLabel(ti.cron),
+      fireAt,
+      description: cronLabel(ti.prompt),
+    },
+    extra
+  );
+}
+
+// The job id comes back only in the response text ("Scheduled one-shot task
+// cf7f8cc8 (37 7 9 9 *)", "Scheduled recurring job ab12cd34 (*/5 * * * *)");
+// a structured field is accepted in case a later build adds one. CronDelete
+// names this id.
+function cronIdFromResponse(res) {
+  if (res && typeof res === "object") {
+    for (const k of ["id", "jobId", "taskId"]) {
+      if (typeof res[k] === "string" && res[k]) return res[k];
+    }
+  }
+  let text = "";
+  if (typeof res === "string") text = res;
+  else if (res && typeof res === "object") {
+    try {
+      text = JSON.stringify(res);
+    } catch {}
+  }
+  const m = /\bScheduled\s+(?:one-shot|recurring)\s+(?:task|job)\s+([A-Za-z0-9_-]{4,64})\b/i.exec(text);
+  return m ? m[1] : null;
+}
+
+function settleCrons(base, now, newTurn) {
+  if (!Array.isArray(base.tasks) || base.tasks.length === 0) return;
+  base.tasks = base.tasks.filter((t) => {
+    if (!t) return false;
+    if (t.kind !== "cron") return true;
+    if (typeof t.fireAt !== "number") return false;
+    // Only one-shots on :00/:30 fire early; a new turn before any other fire
+    // time is the user's own prompt, and the job is still pending
+    const early = !t.recurring && new Date(t.fireAt * 1000).getMinutes() % 30 === 0 ? CRON_EARLY_S : 0;
+    const due = newTurn ? t.fireAt - early <= now : t.fireAt + CRON_LATE_S <= now;
+    if (!due) return true;
+    // An aged-out recurring job still gets one final fire, so the lifetime is
+    // checked at a fire, not before it
+    if (!t.recurring) return false;
+    if (typeof t.startedAt === "number" && t.startedAt + CRON_LIFETIME_S <= now) return false;
+    const next = nextCronFire(t.cronExpr, Math.max(now, t.fireAt));
+    if (next == null) return false;
+    t.fireAt = next;
+    return true;
+  });
+}
+
 // Without a description, label the row with the program name only. The raw
 // command would land both in the session file and on an always-on-top panel
 // that ends up in screenshots and screen shares, and background commands are
@@ -651,10 +839,10 @@ function attachTaskId(base, input, now, taskId) {
   let entry = id ? tasks.find((t) => t && t.id === id) : null;
   if (!entry && !id) {
     // No correlation key: the newest entry still missing a taskId is the one
-    // that just started (entries are pushed in call order). Monitor rows
-    // never carry a taskId — they must not soak up a bash command's id.
+    // that just started (entries are pushed in call order). Monitor and cron
+    // rows never carry a taskId — they must not soak up a bash command's id.
     for (let i = tasks.length - 1; i >= 0; i--) {
-      if (tasks[i] && !tasks[i].taskId && tasks[i].kind !== "monitor") {
+      if (tasks[i] && !tasks[i].taskId && !tasks[i].kind) {
         entry = tasks[i];
         break;
       }
@@ -675,7 +863,7 @@ function removeTask(base, input) {
     // Same fallback as attachTaskId — and the same monitor guard: removing
     // the newest taskId-less row must never take out a live watch
     for (let j = base.tasks.length - 1; j >= 0; j--) {
-      if (base.tasks[j] && !base.tasks[j].taskId && base.tasks[j].kind !== "monitor") {
+      if (base.tasks[j] && !base.tasks[j].taskId && !base.tasks[j].kind) {
         i = j;
         break;
       }
@@ -758,13 +946,18 @@ function reapFinished(base, transcriptPath, tailBytes) {
 // ones it can't: sync-agent strays (their PostToolUse removal was lost) and
 // entries with no usable id, which would otherwise be stuck until SessionEnd.
 // Bash rows must have a confirmed taskId — a bg request that never detached
-// gets no notification, so an id-only row could be such a stray.
+// gets no notification, so an id-only row could be such a stray. Monitor rows
+// are kept on their tool_use_id alone (the deadline sweep bounds them); cron
+// rows need the job id from PostToolUse — a denied or rejected CronCreate
+// schedules nothing, and a recurring row would otherwise re-arm for 7 days.
 function keepBackgroundRows(base) {
   if (Array.isArray(base.agents)) {
     base.agents = base.agents.filter((a) => a && a.bg === true && a.id);
   }
   if (Array.isArray(base.tasks)) {
-    base.tasks = base.tasks.filter((t) => t && (t.taskId || (t.kind === "monitor" && t.id)));
+    base.tasks = base.tasks.filter(
+      (t) => t && (t.taskId || (t.kind === "monitor" && t.id) || (t.kind === "cron" && t.cronId))
+    );
   }
 }
 
@@ -970,6 +1163,9 @@ async function main() {
   // A timed-out watch is dead whatever the transcript still shows, and the
   // check costs no I/O — every event sweeps it.
   dropExpiredMonitors(base, now);
+  // A scheduled prompt fires as a new turn (see settleCrons); the same flag
+  // UserPromptSubmit reads below tells a new turn from a steering message.
+  settleCrons(base, now, ev === "UserPromptSubmit" && base.turnActive !== true);
 
   // Drop rows for background work that has finished since the last event.
   // Turn boundaries get the wide scan: rows survive them now (see
@@ -1013,6 +1209,12 @@ async function main() {
       } else {
         reapFinished(base, input.transcript_path, TAIL_BYTES_TURN);
         keepBackgroundRows(base);
+        // A scheduled job lives in the Claude Code process, so a resume after
+        // a crash (a new process) has no job behind the row — and unlike a
+        // command's row, nothing would ever reap it. compact stays in-process.
+        if (input.source !== "compact" && Array.isArray(base.tasks)) {
+          base.tasks = base.tasks.filter((t) => !(t && t.kind === "cron" && !t.durable));
+        }
       }
       saveState(base);
       launchApp();
@@ -1072,6 +1274,9 @@ async function main() {
           pushTask(base, input, now);
         } else if (isMonitor(input)) {
           pushTask(base, input, now, { kind: "monitor", expiresAt: monitorExpiry(input, now) });
+        } else if (isCronCreate(input)) {
+          const row = cronRow(input, now);
+          if (row) pushTask(base, input, now, row);
         }
       }
       if (base.turnStartedAt == null) base.turnStartedAt = now;
@@ -1131,6 +1336,30 @@ async function main() {
             // back rather than leave the watch invisible for its whole run.
             pushTask(base, input, now, { kind: "monitor", monitorId: mid, expiresAt });
           }
+        }
+      } else if (isCronCreate(input)) {
+        // The job is scheduled here, not at PreToolUse — a call held at a
+        // permission prompt fires from its approval, so the fire time is
+        // computed again. A row already swept while the prompt was open (its
+        // PreToolUse fire time went past the late edge) is put back: the
+        // response is proof the job exists.
+        const cid = cronIdFromResponse(input.tool_response);
+        const id = typeof input.tool_use_id === "string" ? input.tool_use_id : null;
+        const tasks = Array.isArray(base.tasks) ? base.tasks : [];
+        const entry = id ? tasks.find((t) => t && t.id === id) : null;
+        const row = cronRow(input, now, cid ? { cronId: cid } : undefined);
+        if (entry) {
+          if (cid) entry.cronId = cid;
+          if (row) entry.fireAt = row.fireAt;
+        } else if (row && cid) {
+          pushTask(base, input, now, row);
+        }
+      } else if (input.tool_name === "CronDelete") {
+        // Cancelled jobs never fire, so the fire-time settle would keep the
+        // row until its (now meaningless) fire time — drop it by id.
+        const cid = (input.tool_input || {}).id;
+        if (typeof cid === "string" && cid && Array.isArray(base.tasks)) {
+          base.tasks = base.tasks.filter((t) => !(t && t.cronId === cid));
         }
       } else if (input.tool_name === "Bash") {
         // Any Bash response carrying a backgroundTaskId is a live background

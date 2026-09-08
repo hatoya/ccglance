@@ -16,7 +16,9 @@ struct BackgroundTask: Codable {
     var taskId: String?      // background shell id from the tool response
     var description: String? // tool description, falling back to the command
     var startedAt: Double?
-    var kind: String?        // "monitor" for Monitor watches; nil for shell commands
+    var kind: String?        // "monitor" for Monitor watches, "cron" for scheduled prompts; nil for shell commands
+    var fireAt: Double?      // cron rows only: next scheduled fire time (epoch seconds)
+    var recurring: Bool?     // cron rows only: fires on every match rather than once
 }
 
 struct PRInfo: Codable {
@@ -1326,18 +1328,45 @@ final class ChildRowView: NSView {
     func update(_ child: ChildRow, sparkIndex: Int, now: TimeInterval) {
         let name: String
         let startedAt: Double?
+        var fireAt: Double? = nil
+        var recurring = false
         switch child {
         case .agent(let agent):
             name = (agent.description?.isEmpty == false) ? agent.description!
                 : (agent.type?.isEmpty == false) ? agent.type! : "agent"
             startedAt = agent.startedAt
         case .command(let task):
-            let fallback = task.kind == "monitor" ? "monitor" : "command"
+            let isCron = task.kind == "cron"
+            let fallback = task.kind == "monitor" ? "monitor" : isCron ? "scheduled" : "command"
             name = (task.description?.isEmpty == false) ? task.description! : fallback
             startedAt = task.startedAt
+            if isCron {
+                fireAt = task.fireAt
+                recurring = task.recurring == true
+            }
+        }
+        descLabel.setText(name)
+        if let fire = fireAt {
+            // A scheduled prompt is waiting, not working: a still glyph instead
+            // of the spinner, and the time counts down to the fire instead of
+            // up from the start
+            spark.setText(recurring ? "↻" : "◷")
+            // Clamped: a corrupt fireAt must not trap the Int conversion
+            let rem = Int(min(max(fire - now, -1), 1e9))
+            if rem <= 0 {
+                timeLabel.setText("due")
+            } else if rem >= 86400 {
+                timeLabel.setText("in \(rem / 86400)d \((rem % 86400) / 3600)h")
+            } else if rem >= 3600 {
+                timeLabel.setText("in \(rem / 3600)h \((rem % 3600) / 60)m")
+            } else if rem >= 60 {
+                timeLabel.setText("in \(rem / 60)m \(rem % 60)s")
+            } else {
+                timeLabel.setText("in \(rem)s")
+            }
+            return
         }
         spark.setText(Theme.sparkFrames[sparkIndex % Theme.sparkFrames.count])
-        descLabel.setText(name)
         if let start = startedAt {
             let sec = max(0, Int(now - start))
             timeLabel.setText(sec >= 60 ? "\(sec / 60)m \(sec % 60)s" : "\(sec)s")
