@@ -9,6 +9,23 @@ const path = require("path");
 const { execFile, execSync, spawn } = require("child_process");
 
 const SESSIONS_DIR = path.join(os.homedir(), ".claude", "ccglance", "sessions");
+// The Windows app records its own exe path here at startup (no `open -a`)
+const APP_PATH_FILE = path.join(os.homedir(), ".claude", "ccglance", "app-path.txt");
+
+const IS_WIN = process.platform === "win32";
+const IS_MAC = process.platform === "darwin";
+
+// Candidates are [dir, ...segments]; one whose dir is an unset env var is
+// skipped (path.join(undefined) throws), and only existing paths come back.
+function existingPaths(candidates) {
+  const out = [];
+  for (const parts of candidates) {
+    if (!parts[0]) continue;
+    const p = path.join(...parts);
+    if (fs.existsSync(p)) out.push(p);
+  }
+  return out;
+}
 
 const TOOL_LABELS = {
   Edit: "Editing",
@@ -64,6 +81,36 @@ function loadState(sessionId) {
   }
 }
 
+// Windows: a reader holding a file without FILE_SHARE_DELETE (antivirus,
+// indexer) makes rename/unlink fail transiently. Retry briefly; returns
+// false when the operation still fails. Elsewhere the op runs once and
+// throws as before.
+function withWinRetry(op) {
+  if (!IS_WIN) {
+    op();
+    return true;
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      op();
+      return true;
+    } catch (e) {
+      if (attempt >= 4 || !["EPERM", "EACCES", "EBUSY"].includes(e.code)) return false;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+}
+
+// A dropped write is preferable to failing the hook: the next event rewrites
+// the whole file anyway.
+function replaceFile(tmp, file) {
+  if (!withWinRetry(() => fs.renameSync(tmp, file))) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+  }
+}
+
 function saveState(state) {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
   const file = stateFile(state.sessionId);
@@ -71,7 +118,7 @@ function saveState(state) {
   // write the same session concurrently; a shared tmp path would corrupt it
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state));
-  fs.renameSync(tmp, file);
+  replaceFile(tmp, file);
 }
 
 // Each hook event runs as a separate process, and tool events from a running
@@ -146,10 +193,18 @@ async function acquireLock(sessionId) {
 // hook runs inside the environment, so CLAUDE_CONFIG_DIR (the profile's
 // cli-data dir) locates the sibling profile.toml, whose desktop_user_data_dir
 // records where that store lives.
+// Electron's userData dir: ~/Library/Application Support on macOS, Roaming
+// AppData on Windows.
+function desktopUserDataDir() {
+  if (IS_WIN) {
+    const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "Claude");
+  }
+  return path.join(os.homedir(), "Library", "Application Support", "Claude");
+}
+
 function desktopStoreRoots() {
-  const roots = [
-    path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions"),
-  ];
+  const roots = [path.join(desktopUserDataDir(), "claude-code-sessions")];
   const dir = process.env.CLAUDE_CONFIG_DIR;
   if (typeof dir === "string" && dir.trim()) {
     const resolved = path.resolve(dir.trim());
@@ -158,10 +213,12 @@ function desktopStoreRoots() {
     let dataDir = null;
     try {
       const toml = fs.readFileSync(path.join(profileDir, "profile.toml"), "utf8");
-      const m = toml.match(/^\s*desktop_user_data_dir\s*=\s*"([^"]+)"/m);
-      if (m) {
-        let v = m[1];
-        if (v.startsWith("~/")) v = path.join(os.homedir(), v.slice(2));
+      // TOML basic string (backslash escapes, the form Windows paths take) or
+      // literal string ('...')
+      const m = toml.match(/^[ \t]*desktop_user_data_dir[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/m);
+      let v = m ? (m[1] !== undefined ? m[1].replace(/\\(["\\])/g, "$1") : m[2]) : "";
+      if (v) {
+        if (/^~[\/\\]/.test(v)) v = path.join(os.homedir(), v.slice(2));
         if (!path.isAbsolute(v)) v = path.join(profileDir, v);
         // A stale/bad value must fall through to the sibling guess below
         if (fs.existsSync(v)) dataDir = v;
@@ -275,6 +332,8 @@ function projectFromCwd(cwd) {
 // identifies tabs by tty), so it runs only in that case — and never under
 // tmux, where the claude process's tty is the tmux pane pty, useless for
 // matching a Terminal tab. process.ppid is the claude process holding the tty.
+// On Windows the macOS fields stay null and the Windows Terminal / console
+// identity is recorded alongside for a future jump feature.
 function captureHost() {
   const env = process.env;
   const host = {
@@ -283,13 +342,18 @@ function captureHost() {
     itermSessionId: env.ITERM_SESSION_ID || null,
     tty: null,
   };
-  if (host.bundleId === "com.apple.Terminal" && host.termProgram !== "tmux") {
+  if (IS_MAC && host.bundleId === "com.apple.Terminal" && host.termProgram !== "tmux") {
     try {
       const t = execSync(`ps -o tty= -p ${process.ppid}`, { timeout: 1000 })
         .toString()
         .trim();
       if (t && t !== "??") host.tty = "/dev/" + t;
     } catch {}
+  }
+  if (IS_WIN) {
+    host.wtSessionId = env.WT_SESSION || null;
+    host.wtProfileId = env.WT_PROFILE_ID || null;
+    host.winSessionName = env.SESSIONNAME || null;
   }
   return host;
 }
@@ -961,15 +1025,54 @@ function keepBackgroundRows(base) {
   }
 }
 
+// Windows has no `open -a`: CCGLANCE_EXE, then the location the app recorded
+// at its last start, then the fixed install locations.
+function windowsAppPath() {
+  const candidates = [[process.env.CCGLANCE_EXE]];
+  try {
+    // Absolute only: a relative entry would resolve against the project cwd
+    const recorded = fs.readFileSync(APP_PATH_FILE, "utf8").trim();
+    if (path.isAbsolute(recorded) && /\.exe$/i.test(recorded)) candidates.push([recorded]);
+  } catch {}
+  candidates.push(
+    [process.env.LOCALAPPDATA, "Programs", "ccglance", "ccglance.exe"],
+    [process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", "ccglance.exe"],
+    [os.homedir(), "scoop", "apps", "ccglance", "current", "ccglance.exe"]
+  );
+  return existingPaths(candidates)[0] || null;
+}
+
 function launchApp() {
   // Best effort: bring ccglance up when a session starts (ignore failures)
-  execFile("open", ["-g", "-a", "ccglance"], () => {});
+  if (!IS_WIN) {
+    execFile("open", ["-g", "-a", "ccglance"], () => {});
+    return;
+  }
+  const exe = windowsAppPath();
+  if (!exe) return;
+  try {
+    // The app is single-instance and shows without activating, so launching
+    // while it already runs is harmless. No windowsHide: it sets SW_HIDE in
+    // STARTUPINFO, which a GUI app's first ShowWindow honours.
+    const child = spawn(exe, [], { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    child.unref();
+  } catch {}
 }
 
 // PR status for the session's branch, fetched via the gh CLI. Runs in a
 // detached child (--fetch-pr mode) so the hook itself never blocks Claude
 // Code waiting on the network.
-const GH_CANDIDATES = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
+const GH_CANDIDATES = IS_WIN
+  ? [
+      "gh",
+      ...existingPaths([
+        [process.env.ProgramFiles, "GitHub CLI", "gh.exe"],
+        [process.env.LOCALAPPDATA, "Programs", "GitHub CLI", "gh.exe"],
+        [os.homedir(), "scoop", "shims", "gh.exe"],
+      ]),
+    ]
+  : ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
 
 // done(pr): pr object → set it, null → clear the field (definitively no PR),
 // undefined → keep the last known state (transient failure: network, timeout)
@@ -981,7 +1084,9 @@ function runGhPrView(cwd, candidates, done, fields = GH_FIELDS) {
   execFile(
     candidates[0],
     ["pr", "view", "--json", fields],
-    { cwd, timeout: 15000 },
+    // windowsHide: the detached child has no console, so gh.exe would
+    // otherwise flash one of its own
+    { cwd, timeout: 15000, windowsHide: true },
     (err, stdout, stderr) => {
       // Hooks may run with a limited PATH; try well-known install locations
       if (err && err.code === "ENOENT") return runGhPrView(cwd, candidates.slice(1), done, fields);
@@ -1043,6 +1148,7 @@ function spawnPrFetch(sessionId, cwd) {
     spawn(process.execPath, [__filename, "--fetch-pr", sessionId, cwd], {
       detached: true,
       stdio: "ignore",
+      windowsHide: true, // a detached node.exe would flash a console per event
     }).unref();
   } catch {}
 }
@@ -1466,7 +1572,7 @@ async function main() {
 
     case "SessionEnd":
       try {
-        fs.unlinkSync(stateFile(sessionId));
+        withWinRetry(() => fs.unlinkSync(stateFile(sessionId)));
       } catch {}
       break;
 
