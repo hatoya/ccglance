@@ -25,7 +25,7 @@ VOICEVOXのMCPサーバーを使用して、作業完了時に音声通知を行
 - 日本語で作業を記載
 - コードコメントは既存スタイルに合わせて英語で最小限に記載する（自明な処理へのコメントは書かない）
 - 対応完了後に `./build.sh` を実行し、ビルドが通ることを確認する（Swiftコンパイル・app生成・ad-hoc署名・zip作成まで検証される）
-- hooks（`hooks/*.js`）を変更した場合は `node --check hooks/<file>.js` で構文確認し、サンプルイベントJSONをstdinに流して動作確認する
+- hooks（`hooks/*.js`）を変更した場合は `node --check hooks/<file>.js` で構文確認し、`node hooks/test/run.js`（ネイティブ + win32疑似の2周）を通し、サンプルイベントJSONをstdinに流して動作確認する。セッションJSONのフィールドを増減した場合は `docs/session-schema.md` も更新する
 - `.claude/settings.json` と `.mcp.json` はコミット対象に含める。`.claude/settings.local.json` はローカル専用（Claude Codeが自動書き込みする場所）のためコミットしない。チームで共有したい許可は `settings.json` の `permissions.allow` に置く
 - `.claude/settings.local.json`の`allow`リストはABC順（アルファベット昇順）でソートする
 - 対応完了後に `.claude/settings.local.json` を整理する（不要な許可の削除、リストのソート等）
@@ -83,10 +83,11 @@ Sources/
 hooks/
 ├── ccglance-hook.js     # ライフサイクルイベントをstdinで受け取りセッション状態JSONを書き込む
 ├── install.js           # ~/.claude/settings.json とCSWプロファイル等へのhook登録（既存hooksは保持、バックアップ作成）
-└── uninstall.js         # 全登録先からccglanceのhooksのみを削除
+├── uninstall.js         # 全登録先からccglanceのhooksのみを削除
+└── test/                # フィクスチャ再生テスト（run.js、preload.js、events/*.json）。フレームワーク不使用
 build.sh                 # ビルドスクリプト（VERSIONが唯一のバージョン情報源）
 icon/                    # アプリアイコン
-docs/                    # README用アセット（demo.gif、social-preview.png等）
+docs/                    # README用アセット（demo.gif、social-preview.png等）と session-schema.md（セッションJSONの契約）
 .github/workflows/release.yml  # リリース公開時にzip+sha256をビルド・添付
 ```
 
@@ -122,10 +123,10 @@ docs/                    # README用アセット（demo.gif、social-preview.png
 
 ## テスト
 
-自動テストは現状存在しない。変更時は以下で動作確認する:
+アプリ側に自動テストは存在しない。hooksは `node hooks/test/run.js` でフィクスチャ再生テストが走る（一時ホームディレクトリにイベントを順に投入し、状態遷移・install/uninstallの登録を検証。ネイティブと `process.platform` をwin32に偽装した2周）。変更時は以下で動作確認する:
 
 - アプリ: `./build.sh && open build/ccglance.app` で起動確認
-- hooks: サンプルイベントをstdinに流して `~/.claude/ccglance/sessions/` への書き込みを確認
+- hooks: `node hooks/test/run.js` に加え、サンプルイベントをstdinに流して `~/.claude/ccglance/sessions/` への書き込みを確認
 
   ```bash
   echo '{"hook_event_name":"PreToolUse","session_id":"test-123","cwd":"/tmp","tool_name":"Bash"}' | node hooks/ccglance-hook.js
