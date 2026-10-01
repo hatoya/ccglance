@@ -6,8 +6,10 @@ description: ccglanceの新バージョンをリリースする一連の流れ�
 # リリース手順
 
 リリースの起点は `v<VERSION>` タグのpushのみ。タグpushで `.github/workflows/release.yml` が
-macOSランナーでビルド → ドラフトリリース作成（ノートはマージ済みPRから自動生成）→
-`ccglance.zip` + `ccglance.zip.sha256` 添付 → 公開 → Homebrew tap更新まで自動で行う。
+`build-macos`（macOSランナー）と `build-windows`（Windowsランナー）を並列でビルド → `publish` ジョブが
+両方を待ってドラフトリリース作成（ノートはマージ済みPRから自動生成）→
+`ccglance.zip` + `ccglance.zip.sha256` + `ccglance_windows.zip` + `ccglance_windows.zip.sha256` 添付 →
+公開 → Homebrew tap更新まで自動で行う。片方のビルドが失敗した場合は何も公開されない。
 
 **GitHub Releaseを手動で公開してはいけない**。リリースはimmutableのため、公開後に成果物を
 添付できず、アセット無しの壊れたリリースになる（v1.5.0〜v1.5.3で実際に起きた事故）。
@@ -45,10 +47,14 @@ PRラベルからバンプ幅を決める: `feature` が1つでもあればminor
 
 ```bash
 bash build.sh
+export PATH="$HOME/.dotnet:$PATH"
+dotnet build windows/ccglance.csproj -c Release
+dotnet build windows/ccglance.csproj -c Release -getProperty:Version
 ```
 
 コンパイル → .app生成 → ad-hoc署名 → zip + sha256生成まで通ること。
 `build/ccglance.app/Contents/Info.plist` の `CFBundleShortVersionString` が新バージョンであること。
+Windows版のコンパイルが通り、`-getProperty:Version` が新バージョンを返すこと（`build.sh` の `VERSION` から読む）。
 
 ### 4. コードレビュー
 
@@ -61,7 +67,7 @@ CLAUDE.mdのPR作成ルールに従い、タイトル `Bump version to <VERSION>
 Test planには「ビルド成功」「Info.plistのバージョン」「CHANGELOGとPR一覧の整合」の確認済み項目と、
 「マージ後にタグをpushしてrelease.ymlの完走を確認」の未了項目を入れる。
 
-このリポジトリはPRに対するCIチェックが無い（release.ymlはタグpushのみ）ので、チェック完了を待たない。
+バンプPRは `hooks/` `windows/` に触れないので `ci.yml` は走らない（パスフィルタ）。チェック完了を待たない。
 
 ### 6. マージ待ち（ここで停止）
 
@@ -90,26 +96,31 @@ gh run list --repo hatoya/ccglance --workflow release.yml --limit 1 \
 gh run watch <run-id> --repo hatoya/ccglance --exit-status
 ```
 
-失敗した場合は原因を調査・修正し、リリースの公開状態で対応を分ける:
+ジョブは `build-macos` → `build-windows`（並列）→ `publish` の3つ（tap / Scoop / winget の更新は `publish` 内のステップで、トークン未設定時はスキップ）。`gh run view <run-id> --repo hatoya/ccglance`
+でどのジョブが落ちたか確認する。失敗した場合は原因を調査・修正し、リリースの公開状態で対応を分ける:
 
-- **公開前の失敗**（ビルド失敗等でドラフトのまま or リリース未作成）: 同じタグで再実行できる。
+- **公開前の失敗**（どちらかのビルド失敗でドラフトのまま or リリース未作成）: 同じタグで再実行できる。
   `gh workflow run release.yml --repo hatoya/ccglance -f tag=v<VERSION>`
   （release.ymlは既存ドラフトの再利用と `--clobber` アップロードに対応している）
 - **公開後（`isDraft: false`）の失敗**: 公開済みリリースはimmutableで修正できないため、
   新バージョンのタグでやり直す
 
-### 9. リリース検証（3点セット）
+### 9. リリース検証（4点セット）
 
 ```bash
 gh release view v<VERSION> --repo hatoya/ccglance \
   --json isDraft,tagName,assets --jq '{isDraft, tagName, assets: [.assets[].name]}'
 gh api repos/hatoya/homebrew-tap/contents/Casks/ccglance.rb \
   --jq '.content' | base64 -d | grep -E 'version|sha256'
+gh api repos/hatoya/scoop-bucket/contents/bucket/ccglance.json \
+  --jq '.content' | base64 -d | jq '{version, hash}'
 ```
 
 - リリースが公開済み（`isDraft: false`）
-- `ccglance.zip` と `ccglance.zip.sha256` の**両方**が添付されている（アプリ内アップデーターに必須）
+- `ccglance.zip` / `ccglance.zip.sha256` / `ccglance_windows.zip` / `ccglance_windows.zip.sha256` の**4点全て**が添付されている（各プラットフォームのアプリ内アップデーターに必須）
 - Homebrew tapのcaskが新バージョンとzipのsha256に更新されている
   （`TAP_GITHUB_TOKEN` 未設定時はスキップされるので、その場合は未更新でも正常）
+- Scoop bucketのマニフェストが新バージョン・新hashに更新されている（`SCOOP_BUCKET_TOKEN` 未設定時はスキップ）。
+  winget-pkgsへの更新PRは `WINGET_TOKEN` 設定時のみ作成され、マージはwinget側で行われるので検証対象外
 
-3点そろったらリリース完了。VOICEVOXが起動していれば完了を音声通知する。
+4点そろったらリリース完了。VOICEVOXが起動していれば完了を音声通知する。
