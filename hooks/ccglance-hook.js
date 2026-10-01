@@ -270,6 +270,20 @@ function projectFromCwd(cwd) {
   return path.basename(cwd);
 }
 
+// The event cwd follows `cd` in Bash, so a session that moved into a subdir
+// would be named after it (e.g. "templates"). The transcript lives under
+// projects/<launch dir with non-alphanumerics as "-">/, so the ancestor of cwd
+// whose encoding matches that folder is the launch dir. Falls back to cwd when
+// nothing matches (cd outside the launch dir, hashed long folder names).
+function launchDir(cwd, transcriptPath) {
+  if (typeof transcriptPath !== "string" || transcriptPath.length === 0) return cwd;
+  const encoded = path.basename(path.dirname(transcriptPath));
+  for (let dir = cwd; ; dir = path.dirname(dir)) {
+    if (dir.replace(/[^a-zA-Z0-9]/g, "-") === encoded) return dir;
+    if (path.dirname(dir) === dir) return cwd;
+  }
+}
+
 // Host identity for the panel's jump-to-session button. Env vars are free;
 // the ps call is only needed for Terminal.app tab matching (its AppleScript
 // identifies tabs by tty), so it runs only in that case — and never under
@@ -1128,7 +1142,7 @@ async function main() {
   // process.cwd(), which would overwrite the project name with a wrong dir.
   if (typeof input.cwd === "string" && input.cwd.length > 0) {
     base.cwd = input.cwd;
-    base.project = projectFromCwd(input.cwd) || base.project;
+    base.project = projectFromCwd(launchDir(input.cwd, input.transcript_path)) || base.project;
   }
   // Trust the mode only when the event carries it — older Claude Code
   // versions omit permission_mode, and unwritten fields persist. The length
