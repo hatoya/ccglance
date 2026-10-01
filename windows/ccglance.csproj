@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!-- Lets `dotnet build` restore the WPF reference packs on macOS/Linux (compile only) -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>ccglance</AssemblyName>
+    <RootNamespace>CcGlance</RootNamespace>
+    <ApplicationIcon>Assets/ccglance.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- A compressed bundle is decompressed into memory at startup -->
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <DebugType>none</DebugType>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Company>hatoya</Company>
+    <Product>ccglance</Product>
+    <Copyright>Copyright (c) 2026 hatoya</Copyright>
+  </PropertyGroup>
+
+  <!-- build.sh is the single version source; CI overrides with -p:Version=<tag> -->
+  <PropertyGroup Condition="'$(Version)' == ''">
+    <BuildShText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../build.sh'))</BuildShText>
+    <Version>$([System.Text.RegularExpressions.Regex]::Match($(BuildShText), 'VERSION="([0-9.]+)"').Groups[1].Value)</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Hooks stay loose next to the exe: install.js locates its sibling via __dirname -->
+    <None Include="../hooks/ccglance-hook.js;../hooks/install.js;../hooks/uninstall.js" Link="hooks/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fonts/LICENSE.txt" Link="Font-Awesome-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="../fonts/Font Awesome 6 Free-Solid-900.otf" Link="Assets/Font Awesome 6 Free-Solid-900.otf" />
+  </ItemGroup>
+
+</Project>

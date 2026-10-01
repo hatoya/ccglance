@@ -30,15 +30,22 @@ const EVENTS = [
   "Stop",
 ];
 
+const IS_WIN = process.platform === "win32";
+
 const MARKER = "ccglance-hook.js";
-const COMMAND = `node "${HOOK_DEST}"`;
+// Forward slashes on Windows: Claude Code may run hook commands through a
+// POSIX-style shell where backslashes are escapes; node accepts either form.
+const COMMAND = `node "${IS_WIN ? HOOK_DEST.split(path.sep).join("/") : HOOK_DEST}"`;
 
 function normalize(dir) {
+  let p;
   try {
-    return fs.realpathSync(dir);
+    p = fs.realpathSync(dir);
   } catch {
-    return path.resolve(dir);
+    p = path.resolve(dir);
   }
+  // Windows paths are case-insensitive; CLAUDE_CONFIG_DIR may differ in case
+  return IS_WIN ? p.toLowerCase() : p;
 }
 
 // Every Claude Code config dir whose settings.json should carry the hooks.
