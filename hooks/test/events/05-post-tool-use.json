@@ -1,0 +1,1 @@
+{"hook_event_name":"PostToolUse","session_id":"ccglance-test-0001","cwd":"/work/demo-project","tool_name":"Bash","tool_use_id":"toolu_01","tool_input":{"command":"ls","description":"List files"},"tool_response":{"stdout":"README.md\n","stderr":"","interrupted":false},"permission_mode":"default"}
