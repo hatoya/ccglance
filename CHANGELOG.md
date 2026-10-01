@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.20.1
+
+- The group heading no longer switches to a subdirectory name when a session `cd`s into one (e.g. `templates` instead of `beacon`). Hook events carry the current `cwd`, which follows `cd` in Bash, so the hook now names the project from the session's launch directory: the transcript lives under `projects/<launch dir with non-alphanumerics as "-">/`, and the ancestor of `cwd` whose encoding matches that folder is taken as the launch dir. When nothing matches (a `cd` outside the launch dir, or a long folder name Claude Code shortened), the name comes from `cwd` as before. The stored `cwd` itself is unchanged, so PR fetching and the jump target behave as they did
+
 ## v1.20.0
 
 - Prompts scheduled with `CronCreate` now show up as background task rows under their session, the way background commands, `Monitor` watches and agents already did. The hook creates the row on `PreToolUse`, takes the job id (needed to match a later `CronDelete`) from the `PostToolUse` response, and computes the next fire time from the cron expression in local time. A firing arrives as an ordinary user turn with no notification of its own, so rows are reconciled by time instead: a one-shot job's row disappears once it has fired, and a recurring job's row advances to its next matching time within the 7-day lifetime. The threshold is the early side on a new turn (the firing is itself a new turn) and the late side on every other event, so a job delayed by a busy REPL keeps its row. Rows without a job id (denied or dismissed calls) are dropped at turn boundaries, and session-scoped rows are dropped on `resume`/`startup` where the process changes (`compact` keeps them, since the process is the same). The panel draws these rows with a static glyph (◷ one-shot / ↻ recurring) and a countdown to the fire time; `fireAt` and `recurring` are additional optional fields, so state files written by an older hook still load
