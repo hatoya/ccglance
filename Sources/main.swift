@@ -818,13 +818,26 @@ final class ClawdView: NSView {
         frames.first?.size ?? NSSize(width: 51, height: 36)
     }
 
-    /// Idle frame scaled to menu bar height, for the hidden-panel status item
-    static var menuBarIcon: NSImage? {
-        guard let image = frames.first?.copy() as? NSImage else { return nil }
+    /// Idle frame as a menu bar template image (white on dark, black on light).
+    /// Templates render by alpha only, so the dark eyes are knocked out to
+    /// keep them as holes in the silhouette.
+    static let menuBarIcon: NSImage? = {
+        guard let tiff = frames.first?.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        let clear = NSColor(deviceRed: 0, green: 0, blue: 0, alpha: 0)
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                if let c = rep.colorAt(x: x, y: y), c.alphaComponent > 0, c.redComponent < 0.5 {
+                    rep.setColor(clear, atX: x, y: y)
+                }
+            }
+        }
         let height: CGFloat = 16
-        image.size = NSSize(width: displaySize.width * height / displaySize.height, height: height)
+        let image = NSImage(size: NSSize(width: displaySize.width * height / displaySize.height, height: height))
+        image.addRepresentation(rep)
+        image.isTemplate = true
         return image
-    }
+    }()
 
     override var intrinsicContentSize: NSSize {
         var s = Self.displaySize
@@ -1832,13 +1845,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        // Hidden: skip all view work; the menu bar item carries the waiting count
-        if panelHidden {
-            let waiting = sessions.filter { $0.status == "permission" }.count
-            let title = waiting > 0 ? "\(waiting)" : ""
-            if let button = statusItem?.button, button.title != title { button.title = title }
-            return
-        }
+        // Hidden: skip all view work
+        if panelHidden { return }
 
         // Group sessions by project (directory name)
         let grouped = Dictionary(grouping: sessions) { $0.project ?? "\u{2014}" }
@@ -2135,7 +2143,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         UserDefaults.standard.set(true, forKey: hiddenKey)
         panel.orderOut(nil)
         showStatusItem()
-        tick()
     }
 
     @objc private func showPanel() {
@@ -2158,8 +2165,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item.autosaveName = "ccglance"  // keep a Cmd-dragged position across hides
         if let button = item.button {
             button.image = ClawdView.menuBarIcon
-            button.imagePosition = .imageLeading
             button.toolTip = "Show ccglance"
+            button.setAccessibilityLabel("Show ccglance")
             button.target = self
             button.action = #selector(showPanel)
         }
