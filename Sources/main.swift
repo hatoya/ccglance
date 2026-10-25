@@ -818,6 +818,14 @@ final class ClawdView: NSView {
         frames.first?.size ?? NSSize(width: 51, height: 36)
     }
 
+    /// Idle frame scaled to menu bar height, for the hidden-panel status item
+    static var menuBarIcon: NSImage? {
+        guard let image = frames.first?.copy() as? NSImage else { return nil }
+        let height: CGFloat = 16
+        image.size = NSSize(width: displaySize.width * height / displaySize.height, height: height)
+        return image
+    }
+
     override var intrinsicContentSize: NSSize {
         var s = Self.displaySize
         s.height += 4 // headroom for the permission bounce
@@ -1541,6 +1549,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let maxWidth: CGFloat = 900
     private let originKey = "ccglancePanelOrigin"
     private let widthKey = "ccglancePanelWidth"
+    private let hiddenKey = "ccglancePanelHidden"
+    private lazy var panelHidden = UserDefaults.standard.bool(forKey: hiddenKey)
+    private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1566,7 +1577,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.panel?.orderFrontRegardless()
+            guard let self, !self.panelHidden else { return }
+            self.panel?.orderFrontRegardless()
         }
 
         // Unplugging a display leaves the panel stranded outside the desktop
@@ -1740,6 +1752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         displayItem.submenu = displayMenu
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Hide panel", action: #selector(hidePanel), keyEquivalent: "")
         menu.addItem(withTitle: "Quit ccglance", action: #selector(quit), keyEquivalent: "")
         for item in menu.items { item.target = self }
         effect.menu = menu
@@ -1761,7 +1774,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         restoreOrigin()
-        panel.orderFrontRegardless()
+        if panelHidden {
+            showStatusItem()
+        } else {
+            panel.orderFrontRegardless()
+        }
     }
 
     // MARK: Tick
@@ -1813,6 +1830,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self?.isRefreshingUntitled = false
                 }
             }
+        }
+
+        // Hidden: skip all view work; the menu bar item carries the waiting count
+        if panelHidden {
+            let waiting = sessions.filter { $0.status == "permission" }.count
+            let title = waiting > 0 ? "\(waiting)" : ""
+            if let button = statusItem?.button, button.title != title { button.title = title }
+            return
         }
 
         // Group sessions by project (directory name)
@@ -2102,6 +2127,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func reinstallHooks() { runInstaller() }
+
+    // MARK: Hide / show
+
+    @objc private func hidePanel() {
+        panelHidden = true
+        UserDefaults.standard.set(true, forKey: hiddenKey)
+        panel.orderOut(nil)
+        showStatusItem()
+        tick()
+    }
+
+    @objc private func showPanel() {
+        panelHidden = false
+        UserDefaults.standard.set(false, forKey: hiddenKey)
+        if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+        tick()  // layout was skipped while hidden
+        moveOnScreenIfNeeded()  // displays may have changed against the stale height
+        panel.orderFrontRegardless()
+    }
+
+    /// Menu bar crab, present only while the panel is hidden; clicking it
+    /// brings the panel back without activating the app.
+    private func showStatusItem() {
+        guard statusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.autosaveName = "ccglance"  // keep a Cmd-dragged position across hides
+        if let button = item.button {
+            button.image = ClawdView.menuBarIcon
+            button.imagePosition = .imageLeading
+            button.toolTip = "Show ccglance"
+            button.target = self
+            button.action = #selector(showPanel)
+        }
+        statusItem = item
+    }
+
+    // Relaunching the app (Finder, Spotlight, `open`) also restores the panel —
+    // a fallback when the menu bar item is pushed out of sight by the notch.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if panelHidden { showPanel() }
+        return false
+    }
+
     @objc private func quit() { NSApp.terminate(nil) }
 
     // MARK: Updates
