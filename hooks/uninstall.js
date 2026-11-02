@@ -12,13 +12,16 @@ const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const CCGLANCE_DIR = path.join(CLAUDE_DIR, "ccglance");
 const CSW_PROFILES_DIR = path.join(os.homedir(), ".context-switcher-claude", "profiles");
 const MARKER = "ccglance-hook.js";
+const IS_WIN = process.platform === "win32";
 
 function normalize(dir) {
+  let p;
   try {
-    return fs.realpathSync(dir);
+    p = fs.realpathSync(dir);
   } catch {
-    return path.resolve(dir);
+    p = path.resolve(dir);
   }
+  return IS_WIN ? p.toLowerCase() : p;
 }
 
 // Same enumeration as install.js so every registered copy is removed.
@@ -94,9 +97,17 @@ function removeFrom(settingsPath) {
 function main() {
   for (const settingsPath of settingsPaths()) removeFrom(settingsPath);
 
-  fs.rmSync(CCGLANCE_DIR, { recursive: true, force: true });
-  console.log(`Removed ${CCGLANCE_DIR}`);
-  console.log("You can now move ccglance.app to the Trash.");
+  try {
+    fs.rmSync(CCGLANCE_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    console.log(`Removed ${CCGLANCE_DIR}`);
+  } catch (e) {
+    // Windows: a still-running app or --fetch-pr child can hold a file open
+    console.error(`Could not remove ${CCGLANCE_DIR}: ${e.message}`);
+    console.error("Quit ccglance and delete the directory manually.");
+  }
+  console.log(
+    IS_WIN ? "You can now delete the ccglance folder." : "You can now move ccglance.app to the Trash."
+  );
 }
 
 main();
