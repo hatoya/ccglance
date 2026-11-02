@@ -1,9 +1,11 @@
-# Builds ccglance.app on a macOS runner when a v* tag is pushed and publishes
-# the GitHub release with ccglance.zip + ccglance.zip.sha256 attached.
-# Both assets are required by the in-app auto-updater (UpdateChecker).
+# Builds ccglance.app on a macOS runner and ccglance.exe on a Windows runner
+# when a v* tag is pushed, then publishes the GitHub release with all four
+# assets attached: ccglance.zip + .sha256 (macOS) and ccglance_windows.zip +
+# .sha256 (Windows). Each pair is required by that platform's in-app updater.
 # Releases are immutable — assets cannot be added after publishing — so the
-# workflow creates a draft, attaches the assets, then publishes it.
-# Can also be run manually (workflow_dispatch) against an existing tag.
+# publish job waits for both builds, creates a draft, attaches everything,
+# then publishes. If either build fails nothing is published; re-run via
+# workflow_dispatch against the same tag once fixed.
 name: Release assets
 
 on:
@@ -19,7 +21,7 @@ permissions:
   contents: write
 
 jobs:
-  build-and-upload:
+  build-macos:
     runs-on: macos-14
     # Generous: a brand-new Apple Developer account's first notarization can
     # be held for extended review.
@@ -30,7 +32,6 @@ jobs:
       # collapse the presence checks into env flags here (env is allowed).
       HAS_SIGNING_CERT: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
       HAS_NOTARY_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
-      HAS_TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,6 +94,80 @@ jobs:
           NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: bash build.sh
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            build/ccglance.zip
+            build/ccglance.zip.sha256
+          if-no-files-found: error
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # CrabFrames.cs is generated from Sources/CrabFrames.swift; fail the
+      # release rather than ship a stale animation
+      - name: Check generated sources
+        run: node windows/tools/gen-crab-frames.js --check
+
+      # Single-file, self-contained, no Authenticode (SHA-256 is the updater's
+      # integrity check). The zip wraps a ccglance/ folder like the macOS one
+      # wraps the .app, and the .sha256 uses the same "<hash>  <file>" format.
+      - name: Build
+        shell: bash
+        run: |
+          VERSION="${TAG#v}"
+          dotnet publish windows/ccglance.csproj -c Release -r win-x64 --self-contained \
+            -p:PublishSingleFile=true -p:Version="$VERSION" -o build/windows/ccglance
+          rm -f build/windows/ccglance/*.pdb
+          (cd build/windows && 7z a -tzip ../ccglance_windows.zip ccglance)
+          (cd build && printf '%s  %s\n' "$(sha256sum ccglance_windows.zip | cut -d' ' -f1)" ccglance_windows.zip > ccglance_windows.zip.sha256)
+          cat build/ccglance_windows.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            build/ccglance_windows.zip
+            build/ccglance_windows.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build-macos, build-windows]
+    timeout-minutes: 15
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      HAS_TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+          path: macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: windows
+
       # Immutable releases forbid adding assets after publishing (and a
       # published tag can never be reused), so create a draft, attach the
       # assets, then publish. Release notes are auto-generated from merged
@@ -100,6 +175,7 @@ jobs:
       - name: Create release with assets and publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set +e
           VIEW=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)
@@ -120,7 +196,10 @@ jobs:
           if [ "$STATE" = "missing" ]; then
             gh release create "$TAG" --draft --title "$TAG" --generate-notes
           fi
-          gh release upload "$TAG" build/ccglance.zip build/ccglance.zip.sha256 --clobber
+          gh release upload "$TAG" \
+            macos/ccglance.zip macos/ccglance.zip.sha256 \
+            windows/ccglance_windows.zip windows/ccglance_windows.zip.sha256 \
+            --clobber
           gh release edit "$TAG" --draft=false --latest
 
       # Keeps the Homebrew tap cask (hatoya/homebrew-tap) in sync with the
@@ -133,11 +212,11 @@ jobs:
           GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
           VERSION="${TAG#v}"
-          SHA256=$(cut -d' ' -f1 build/ccglance.zip.sha256)
+          SHA256=$(cut -d' ' -f1 macos/ccglance.zip.sha256)
           gh auth setup-git
           git clone --depth 1 https://github.com/hatoya/homebrew-tap.git "$RUNNER_TEMP/homebrew-tap"
           CASK="$RUNNER_TEMP/homebrew-tap/Casks/ccglance.rb"
-          sed -i '' \
+          sed -i \
             -e "s/^  version \".*\"/  version \"$VERSION\"/" \
             -e "s/^  sha256 \".*\"/  sha256 \"$SHA256\"/" \
             "$CASK"
@@ -156,11 +235,3 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "ccglance $VERSION"
           git push
-
-      - name: Clean up signing material
-        if: always()
-        run: |
-          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then
-            security delete-keychain "$SIGNING_KEYCHAIN" || true
-          fi
-          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
