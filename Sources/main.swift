@@ -57,6 +57,7 @@ struct SessionState: Codable {
     var env: String?          // isolated-environment name (CLAUDE_CONFIG_DIR); recorded by the hook, not displayed
     var permissionMode: String?  // "plan" | "acceptEdits" | … (optional: older files lack it)
     var planApprovedAt: Double?  // set when the user approves a plan, cleared when a new plan cycle starts (optional: older hooks lack it)
+    var parentSessionId: String?  // session that started this one in Claude Desktop (side session / task card); resolved by the app, not the hook
 }
 
 enum StateStore {
@@ -170,6 +171,15 @@ enum StateStore {
     struct DesktopInfo {
         var title: String?
         var dismissedPRs: [String]?   // PR urls
+        var parentSessionId: String?  // resolved CLI id of the spawning session (desktopInfo results only)
+    }
+
+    /// Store-side identity of one file: its own Desktop id ("local_<uuid>")
+    /// and, for a session started from another one (side session or task
+    /// card), the spawning session's Desktop id from `spawnedFrom`.
+    struct DesktopLink {
+        var localId: String?
+        var parentLocalId: String?
     }
 
     /// Keep the dismissal list small and order-independent: it is compared on
@@ -181,7 +191,7 @@ enum StateStore {
     /// it carries. `prs` is read only when the key is present, so a store
     /// written before the Desktop app tracked PRs never blanks dismissals
     /// resolved from another file.
-    private static func parseStoreFile(_ url: URL) -> (ids: [String], info: DesktopInfo)? {
+    private static func parseStoreFile(_ url: URL) -> (ids: [String], info: DesktopInfo, link: DesktopLink)? {
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         var ids: [String] = []
@@ -190,6 +200,12 @@ enum StateStore {
         }
         if let bridged = obj["bridgeSessionIds"] as? [String] { ids += bridged }
         guard !ids.isEmpty else { return nil }
+        var link = DesktopLink()
+        link.localId = obj["sessionId"] as? String
+        if let spawned = obj["spawnedFrom"] as? [String: Any],
+           let parent = spawned["sessionId"] as? String, !parent.isEmpty, parent != link.localId {
+            link.parentLocalId = parent
+        }
         var info = DesktopInfo()
         if let raw = obj["title"] as? String {
             let title = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -206,7 +222,7 @@ enum StateStore {
             }
             info.dismissedPRs = urls.suffix(dismissedPRLimit).sorted()
         }
-        return (ids, info)
+        return (ids, info, link)
     }
 
     /// What a store walk remembers about one file, so the next walk re-parses
@@ -221,16 +237,22 @@ enum StateStore {
         var size: Int
         var ids: [String]      // empty when the file failed to parse
         var info: DesktopInfo
+        var link: DesktopLink
     }
     private static var storeCache: [String: StoreFileEntry] = [:]
 
     /// Title and dismissals are resolved independently — each takes the newest
     /// file that actually carries it — so a fresher file missing one half can
-    /// never blank what an older one still knows.
-    static func desktopInfo(for sessionIds: Set<String>) -> [String: DesktopInfo] {
+    /// never blank what an older one still knows. `tracked` (every session
+    /// with a state file) is what a spawning session's id may resolve to: the
+    /// parent's store file lists several ids, and only the one the hooks
+    /// write under can nest its children on the panel.
+    static func desktopInfo(for sessionIds: Set<String>, tracked: Set<String>) -> [String: DesktopInfo] {
         dispatchPrecondition(condition: .onQueue(refreshQueue))
         var titles: [String: (value: String, mtime: Date)] = [:]
         var dismissed: [String: (value: [String], mtime: Date)] = [:]
+        var parents: [String: (value: String, mtime: Date)] = [:]   // CLI id → parent's Desktop id
+        var idsByLocalId: [String: [String]] = [:]
         // Rebuilt from scratch each walk so deleted files drop out
         var nextCache: [String: StoreFileEntry] = [:]
         nextCache.reserveCapacity(storeCache.count)
@@ -253,23 +275,29 @@ enum StateStore {
                     if values != nil, let cached = storeCache[path],
                        cached.mtime == mtime, cached.size == size {
                         entry = cached
-                    } else if let (ids, info) = parseStoreFile(url) {
-                        entry = StoreFileEntry(mtime: mtime, size: size, ids: ids, info: info)
+                    } else if let (ids, info, link) = parseStoreFile(url) {
+                        entry = StoreFileEntry(mtime: mtime, size: size, ids: ids, info: info, link: link)
                     } else {
                         // Remembered too, so an unparsable file (a foreign
                         // schema, a truncated write) isn't re-read every walk;
                         // a completed write changes mtime/size and re-parses.
-                        entry = StoreFileEntry(mtime: mtime, size: size, ids: [], info: DesktopInfo())
+                        entry = StoreFileEntry(mtime: mtime, size: size, ids: [], info: DesktopInfo(), link: DesktopLink())
                     }
                     // A file whose stat failed has nothing reliable to key
                     // it by — parsed every walk, as before
                     if values != nil { nextCache[path] = entry }
+                    if let local = entry.link.localId {
+                        idsByLocalId[local, default: []] += entry.ids
+                    }
                     for id in entry.ids where sessionIds.contains(id) {
                         if let title = entry.info.title, titles[id] == nil || mtime > titles[id]!.mtime {
                             titles[id] = (title, mtime)
                         }
                         if let prs = entry.info.dismissedPRs, dismissed[id] == nil || mtime > dismissed[id]!.mtime {
                             dismissed[id] = (prs, mtime)
+                        }
+                        if let parent = entry.link.parentLocalId, parents[id] == nil || mtime > parents[id]!.mtime {
+                            parents[id] = (parent, mtime)
                         }
                     }
                 }
@@ -279,6 +307,13 @@ enum StateStore {
         var result: [String: DesktopInfo] = [:]
         for (id, entry) in titles { result[id, default: DesktopInfo()].title = entry.value }
         for (id, entry) in dismissed { result[id, default: DesktopInfo()].dismissedPRs = entry.value }
+        // A parent the hooks don't track (closed, pruned, CLI-less) leaves the
+        // child unresolved — it simply stays a top-level row
+        for (id, entry) in parents {
+            guard let parent = idsByLocalId[entry.value]?.first(where: { $0 != id && tracked.contains($0) })
+            else { continue }
+            result[id, default: DesktopInfo()].parentSessionId = parent
+        }
         return result
     }
 
@@ -298,13 +333,23 @@ enum StateStore {
 
     /// One-shot catch-up for renames and PR dismissals made while the app was
     /// down. Scoped to the sessions that can actually change on screen — a PR
-    /// icon to hide, or a name still missing — so a launch with nothing pending
-    /// walks no store at all. Delayed so it never races the watcher's first
-    /// callback for the same files.
+    /// icon to hide, a name still missing, or a Desktop session whose parent
+    /// isn't resolved to a session on the panel (never resolved, or the parent
+    /// restarted under a new id) — so a terminal-only launch with nothing
+    /// pending walks no store at all. Any running Desktop session makes this a
+    /// cold full walk, but the watcher's first callback would do the same walk
+    /// moments later anyway. Delayed so it never races that callback for the
+    /// same files.
     static func sweepDesktopInfoAtLaunch() {
         refreshQueue.asyncAfter(deadline: .now() + 3) {
-            let targets = Set(load()
-                .filter { $0.pr != nil || $0.title?.isEmpty != false }
+            let sessions = load()
+            let ids = Set(sessions.map { $0.sessionId })
+            let targets = Set(sessions
+                .filter {
+                    $0.pr != nil || $0.title?.isEmpty != false
+                        || ($0.host?.bundleId == HostJumper.claudeDesktopBundleId
+                            && !($0.parentSessionId.map(ids.contains) ?? false))
+                }
                 .map { $0.sessionId })
             guard !targets.isEmpty else { return }
             refreshDesktopInfo(only: targets)
@@ -318,11 +363,11 @@ enum StateStore {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil) else { return }
         // State files are named <session_id>.json, so ids resolve without decoding
-        var targets = Set(files.filter { $0.pathExtension == "json" }
+        let tracked = Set(files.filter { $0.pathExtension == "json" }
             .map { $0.deletingPathExtension().lastPathComponent })
-        if let only { targets.formIntersection(only) }
+        let targets = only.map { tracked.intersection($0) } ?? tracked
         guard !targets.isEmpty else { return }
-        persist(desktopInfo(for: targets))
+        persist(desktopInfo(for: targets, tracked: tracked))
     }
 
     /// Re-resolve the sessions referenced by specific store files
@@ -336,7 +381,7 @@ enum StateStore {
         var ids = Set<String>()
         for url in urls {
             autoreleasepool {
-                guard let (fileIds, _) = parseStoreFile(url) else { return }
+                guard let (fileIds, _, _) = parseStoreFile(url) else { return }
                 ids.formUnion(fileIds)
             }
         }
@@ -363,6 +408,10 @@ enum StateStore {
                 obj["title"] = title
                 changed = true
             }
+            if let parent = found.parentSessionId, obj["parentSessionId"] as? String != parent {
+                obj["parentSessionId"] = parent
+                changed = true
+            }
             // The store is authoritative: an emptied list clears the field, so
             // un-dismissing in Claude Desktop brings the PR icon back
             if let dismissed = found.dismissedPRs {
@@ -381,13 +430,23 @@ enum StateStore {
             try? out.write(to: url, options: .atomic)
             // A hook's own read-modify-write can land between the read above and
             // this write. A lost title heals on the next turn boundary (the hook
-            // re-resolves it), a lost dismissal never does — the hook doesn't
-            // read the Desktop store's PR list — so verify that one and retry once.
-            guard let dismissed = found.dismissedPRs, !dismissed.isEmpty,
+            // re-resolves it), a lost dismissal or parent never does — the hook
+            // doesn't read either from the Desktop store — so verify those and
+            // retry once.
+            let dismissed = found.dismissedPRs.flatMap { $0.isEmpty ? nil : $0 }
+            guard dismissed != nil || found.parentSessionId != nil,
                   let fresh = try? Data(contentsOf: url),
-                  var reread = (try? JSONSerialization.jsonObject(with: fresh)) as? [String: Any],
-                  reread["prDismissed"] as? [String] != dismissed else { continue }
-            reread["prDismissed"] = dismissed
+                  var reread = (try? JSONSerialization.jsonObject(with: fresh)) as? [String: Any] else { continue }
+            var lost = false
+            if let dismissed, reread["prDismissed"] as? [String] != dismissed {
+                reread["prDismissed"] = dismissed
+                lost = true
+            }
+            if let parent = found.parentSessionId, reread["parentSessionId"] as? String != parent {
+                reread["parentSessionId"] = parent
+                lost = true
+            }
+            guard lost else { continue }
             if let retry = try? JSONSerialization.data(withJSONObject: reread) {
                 try? retry.write(to: url, options: .atomic)
             }
@@ -937,7 +996,12 @@ enum DisplayPrefs {
 
 final class SessionRowView: NSView {
     static let height: CGFloat = 28
+    /// Horizontal step per nesting level (sub-sessions under their parent);
+    /// matches ChildRowView's tree glyph + spark offset so the columns line up
+    static let indentStep: CGFloat = 20
+    static let maxDepth = 3
 
+    let treeGlyph = NSTextField(labelWithString: "└")   // shown on sub-session rows only
     let glyph = NSTextField(labelWithString: "")
     let projectLabel = NSTextField(labelWithString: "")
     let planBadge = NSTextField(labelWithString: "")    // green check icon after plan approval, until a new plan cycle starts
@@ -961,10 +1025,24 @@ final class SessionRowView: NSView {
     // than the right label, so the title must yield to it — but only then,
     // or the hidden button's width would squeeze titles permanently.
     private var titleClearsButton: NSLayoutConstraint?
+    private var glyphLeading: NSLayoutConstraint?
+    private var treeLeading: NSLayoutConstraint?
 
     /// Separator drawn only between rows (hidden on the last row)
     var showsSeparator: Bool = true {
         didSet { separator.isHidden = !showsSeparator }
+    }
+
+    /// Nesting level: 0 for a top-level session, 1+ for a session started
+    /// from the one above it in Claude Desktop
+    var depth: Int = 0 {
+        didSet {
+            guard depth != oldValue else { return }
+            let level = CGFloat(min(max(depth, 0), Self.maxDepth))
+            glyphLeading?.constant = 8 + level * Self.indentStep
+            treeLeading?.constant = 8 + max(level - 1, 0) * Self.indentStep
+            treeGlyph.isHidden = level == 0
+        }
     }
 
     override init(frame: NSRect) {
@@ -979,6 +1057,10 @@ final class SessionRowView: NSView {
 
         glyph.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         glyph.alignment = .center
+        treeGlyph.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        treeGlyph.textColor = .tertiaryLabelColor
+        treeGlyph.alignment = .center
+        treeGlyph.isHidden = true
         projectLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         projectLabel.lineBreakMode = .byTruncatingTail
         rightLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
@@ -1000,18 +1082,24 @@ final class SessionRowView: NSView {
         separator.translatesAutoresizingMaskIntoConstraints = false
         addSubview(separator)
 
-        for v in [glyph, projectLabel, planBadge, modeBadge, rightLabel] {
+        for v in [treeGlyph, glyph, projectLabel, planBadge, modeBadge, rightLabel] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
 
+        glyphLeading = glyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
+        treeLeading = treeGlyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
         NSLayoutConstraint.activate([
             highlight.leadingAnchor.constraint(equalTo: leadingAnchor),
             highlight.trailingAnchor.constraint(equalTo: trailingAnchor),
             highlight.topAnchor.constraint(equalTo: topAnchor),
             highlight.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            glyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            treeLeading!,
+            treeGlyph.widthAnchor.constraint(equalToConstant: 16),
+            treeGlyph.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            glyphLeading!,
             glyph.widthAnchor.constraint(equalToConstant: 16),
             glyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
@@ -1275,6 +1363,57 @@ enum ChildRow {
     }
 }
 
+// MARK: - Session tree (sub-sessions nested under the session that started them)
+
+struct SessionEntry {
+    let session: SessionState
+    let depth: Int
+}
+
+enum SessionTree {
+    /// Project groups in display order. A session started from another one in
+    /// Claude Desktop follows its parent (and joins the parent's group even
+    /// when its worktree resolves to another project); one whose parent isn't
+    /// on the panel is a top-level row as before. `sessions` keeps its order
+    /// among siblings.
+    static func groups(_ sessions: [SessionState]) -> [(name: String, entries: [SessionEntry])] {
+        let ids = Set(sessions.map { $0.sessionId })
+        var children: [String: [SessionState]] = [:]
+        var roots: [SessionState] = []
+        for s in sessions {
+            if let parent = s.parentSessionId, parent != s.sessionId, ids.contains(parent) {
+                children[parent, default: []].append(s)
+            } else {
+                roots.append(s)
+            }
+        }
+        var visited = Set<String>()
+        func flatten(_ s: SessionState, depth: Int, into out: inout [SessionEntry]) {
+            guard visited.insert(s.sessionId).inserted else { return }
+            out.append(SessionEntry(session: s, depth: depth))
+            for child in children[s.sessionId] ?? [] {
+                flatten(child, depth: depth + 1, into: &out)
+            }
+        }
+        var trees: [(root: SessionState, entries: [SessionEntry])] = []
+        for root in roots {
+            var entries: [SessionEntry] = []
+            flatten(root, depth: 0, into: &entries)
+            trees.append((root, entries))
+        }
+        // A parent cycle has no root to reach it from — show those flat
+        // rather than dropping them
+        for s in sessions where !visited.contains(s.sessionId) {
+            var entries: [SessionEntry] = []
+            flatten(s, depth: 0, into: &entries)
+            trees.append((s, entries))
+        }
+        return Dictionary(grouping: trees) { $0.root.project ?? "\u{2014}" }
+            .map { (name: $0.key, entries: $0.value.flatMap { $0.entries }) }
+            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+}
+
 final class ChildRowView: NSView {
     static let height: CGFloat = 24
 
@@ -1283,9 +1422,19 @@ final class ChildRowView: NSView {
     let descLabel = NSTextField(labelWithString: "")
     let timeLabel = NSTextField(labelWithString: "")
     private let separator = NSBox()
+    private var treeLeading: NSLayoutConstraint?
 
     var showsSeparator: Bool = false {
         didSet { separator.isHidden = !showsSeparator }
+    }
+
+    /// Nesting level of the owning session row (SessionRowView.depth)
+    var depth: Int = 0 {
+        didSet {
+            guard depth != oldValue else { return }
+            let level = CGFloat(min(max(depth, 0), SessionRowView.maxDepth))
+            treeLeading?.constant = 8 + level * SessionRowView.indentStep
+        }
     }
 
     override init(frame: NSRect) {
@@ -1321,9 +1470,10 @@ final class ChildRowView: NSView {
             addSubview(v)
         }
 
+        treeLeading = treeGlyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
         NSLayoutConstraint.activate([
             // Same column as the session row's glyph
-            treeGlyph.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            treeLeading!,
             treeGlyph.widthAnchor.constraint(equalToConstant: 16),
             treeGlyph.centerYAnchor.constraint(equalTo: centerYAnchor),
 
@@ -1848,17 +1998,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Hidden: skip all view work
         if panelHidden { return }
 
-        // Group sessions by project (directory name)
-        let grouped = Dictionary(grouping: sessions) { $0.project ?? "\u{2014}" }
-            .map { (name: $0.key, sessions: $0.value) }
-            .sorted { $0.name.lowercased() < $1.name.lowercased() }
+        // Group sessions by project (directory name), sub-sessions under their parent
+        let grouped = SessionTree.groups(sessions)
 
-        // Rebuild views only when the group structure (or child row counts) changes
+        // Rebuild views only when the group structure (or child row counts) changes;
+        // depth is applied on every update, so it stays out of the signature
         let signature = grouped.map { group in
-            let childCounts = group.sessions
-                .map { String(ChildRow.count(of: $0)) }
+            let childCounts = group.entries
+                .map { String(ChildRow.count(of: $0.session)) }
                 .joined(separator: ",")
-            return "\(group.name)#\(group.sessions.count)#\(childCounts)"
+            return "\(group.name)#\(group.entries.count)#\(childCounts)"
         }.joined(separator: "|")
         if signature != lastSignature {
             lastSignature = signature
@@ -1877,7 +2026,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     header.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
                 ])
                 groupHeaders.append(header)
-                for session in group.sessions {
+                for entry in group.entries {
                     let row = SessionRowView(frame: .zero)
                     row.translatesAutoresizingMaskIntoConstraints = false
                     stack.addArrangedSubview(row)
@@ -1887,7 +2036,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         row.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
                     ])
                     rows.append(row)
-                    for _ in 0..<ChildRow.count(of: session) {
+                    for _ in 0..<ChildRow.count(of: entry.session) {
                         let childRow = ChildRowView(frame: .zero)
                         childRow.translatesAutoresizingMaskIntoConstraints = false
                         stack.addArrangedSubview(childRow)
@@ -1904,15 +2053,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         var rowIndex = 0
         var childRowIndex = 0
         for group in grouped {
-            for (j, session) in group.sessions.enumerated() {
+            for (j, entry) in group.entries.enumerated() {
                 guard rowIndex < rows.count else { break }
-                rows[rowIndex].update(session, sparkIndex: sparkIndex, now: now)
-                let children = ChildRow.all(of: session)
+                rows[rowIndex].depth = entry.depth
+                rows[rowIndex].update(entry.session, sparkIndex: sparkIndex, now: now)
+                let children = ChildRow.all(of: entry.session)
                 // border after every visual row except the group's last one
-                let isLastInGroup = j == group.sessions.count - 1
+                let isLastInGroup = j == group.entries.count - 1
                 rows[rowIndex].showsSeparator = !children.isEmpty || !isLastInGroup
                 for (k, child) in children.enumerated() {
                     guard childRowIndex < childRows.count else { break }
+                    childRows[childRowIndex].depth = entry.depth
                     childRows[childRowIndex].update(child, sparkIndex: sparkIndex, now: now)
                     childRows[childRowIndex].showsSeparator = !(isLastInGroup && k == children.count - 1)
                     childRowIndex += 1
