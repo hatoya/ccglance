@@ -2,6 +2,10 @@
 
 Release notes list only what changed since the previous release.
 
+## v1.21.0
+
+- Sessions started from another session in Claude Desktop (side sessions and task cards) are now shown indented with `└` directly under the session that started them, in the same project group. The Desktop store file's `spawnedFrom.sessionId` is read on the cached store walk the app already does for session names, resolved to the parent's tracked session id, and persisted as `parentSessionId` on the state file (the hook keeps unknown fields, so it is unchanged). A sub-session's own subagent and background task rows are indented along with it; nested sub-sessions are indented up to three levels, and a parent cycle is broken at one of its sessions, which shows as a top-level row, so nothing is dropped. When the parent is not on the panel (ended, cleared, or not tracked by the hooks), the sub-session shows as a top-level row as before. The launch sweep also covers Desktop sessions whose parent is still unresolved, so existing sub-sessions nest right after updating, and `persist()`'s verify-and-retry now covers `parentSessionId` too, in case a concurrent hook read-modify-write drops it
+
 ## v1.20.1
 
 - The group heading no longer switches to a subdirectory name when a session `cd`s into one (e.g. `templates` instead of `beacon`). Hook events carry the current `cwd`, which follows `cd` in Bash, so the hook now names the project from the session's launch directory: the transcript lives under `projects/<launch dir with non-alphanumerics as "-">/`, and the ancestor of `cwd` whose encoding matches that folder is taken as the launch dir. When nothing matches (a `cd` outside the launch dir, or a long folder name Claude Code shortened), the name comes from `cwd` as before. The stored `cwd` itself is unchanged, so PR fetching and the jump target behave as they did
