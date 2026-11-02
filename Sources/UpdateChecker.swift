@@ -13,6 +13,10 @@ final class UpdateChecker {
     /// GitHub repo to check. Change when the repo is published.
     static let repo = "hatoya/ccglance"
 
+    /// Release asset for this platform; the Windows client ships alongside
+    /// as ccglance_windows.zip
+    static let zipAssetName = "ccglance.zip"
+
     /// Apple Developer Team ID releases are signed with. Updates signed by
     /// anyone else (including ad-hoc CI fallback builds) are refused, so a
     /// compromised GitHub account alone can't push code to existing users.
@@ -30,7 +34,7 @@ final class UpdateChecker {
     struct Release {
         let version: String   // normalized, no leading "v"
         let pageURL: URL      // html_url — fallback when auto-install fails
-        let zipURL: URL?      // first .zip asset — what we download and install
+        let zipURL: URL?      // the macOS zip asset — what we download and install
         let shaURL: URL?      // "<zip>.sha256" asset — auto-install requires it
     }
 
@@ -98,10 +102,10 @@ final class UpdateChecker {
                             urls[name] = url
                         }
                     }
-                    if let zipName = urls.keys.filter({ $0.hasSuffix(".zip") }).sorted().first {
-                        zipURL = urls[zipName]
-                        shaURL = urls[zipName + ".sha256"]
-                    }
+                    // Exact name: releases also carry the Windows zip, and a
+                    // "first .zip" pick could grab that one instead
+                    zipURL = urls[Self.zipAssetName]
+                    shaURL = urls[Self.zipAssetName + ".sha256"]
                 }
                 if Self.isNewer(version, than: Self.currentVersion) {
                     found = Release(version: version, pageURL: pageURL, zipURL: zipURL, shaURL: shaURL)
